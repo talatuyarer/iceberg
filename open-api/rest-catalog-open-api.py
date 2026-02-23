@@ -80,16 +80,23 @@ class UpdateNamespacePropertiesRequest(BaseModel):
     updates: dict[str, str] | None = Field(None, example={'owner': 'Hank Bendickson'})
 
 
-class Namespace(BaseModel):
+class NamespaceObject(BaseModel):
     """
     Reference to one or more levels of a namespace
     """
-
-    __root__: list[str] = Field(
+    namespace: list[str] = Field(
         ...,
         description='Reference to one or more levels of a namespace',
         example=['accounting', 'tax'],
     )
+    namespace_uuid: str | None = Field(
+        None,
+        alias='namespace-uuid',
+        description='Optional UUID representing the unique identifier for the namespace.',
+    )
+
+
+Namespace = list[str] | NamespaceObject
 
 
 class PageToken(BaseModel):
@@ -731,11 +738,6 @@ class IcebergErrorResponse(BaseModel):
 
 class CreateNamespaceResponse(BaseModel):
     namespace: Namespace
-    namespace_uuid: str | None = Field(
-        None,
-        alias='namespace-uuid',
-        description='Optional UUID representing the unique identifier for the namespace. This is tied to the actual entity, not the name, which can be reused.',
-    )
     properties: dict[str, str] | None = Field(
         {},
         description='Properties stored on the namespace, if supported by the server.',
@@ -745,11 +747,6 @@ class CreateNamespaceResponse(BaseModel):
 
 class GetNamespaceResponse(BaseModel):
     namespace: Namespace
-    namespace_uuid: str | None = Field(
-        None,
-        alias='namespace-uuid',
-        description='Optional UUID representing the unique identifier for the namespace. This is tied to the actual entity, not the name, which can be reused.',
-    )
     properties: dict[str, str] | None = Field(
         {},
         description='Properties stored on the namespace, if supported by the server. If the server does not support namespace properties, it should return null for this field. If namespace properties are supported, but none are set, it should return an empty object.',
