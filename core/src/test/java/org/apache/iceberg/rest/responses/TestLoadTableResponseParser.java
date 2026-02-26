@@ -60,6 +60,21 @@ public class TestLoadTableResponseParser {
   }
 
   @Test
+  public void pointerParsing() {
+    String json = "{\"metadata-location\":\"custom-location\",\"metadata\":{}}";
+    LoadTableResponse response = LoadTableResponseParser.fromJson(json);
+    assertThat(response.metadataLocation()).isEqualTo("custom-location");
+    assertThat(response.tableMetadata()).isNull();
+
+    String serialized = LoadTableResponseParser.toJson(response);
+    assertThat(serialized).isEqualTo(json);
+
+    assertThatThrownBy(() -> LoadTableResponseParser.fromJson("{\"metadata\":{}}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Invalid response: must have metadata or metadata-location");
+  }
+
+  @Test
   public void roundTripSerdeV1() {
     String uuid = "386b9f01-002b-4d8c-b77f-42c3fd3b7c9b";
     TableMetadata metadata =

@@ -27,6 +27,7 @@ import java.util.function.Supplier;
 import org.apache.iceberg.LocationProviders;
 import org.apache.iceberg.MetadataUpdate;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.UpdateRequirement;
@@ -150,6 +151,45 @@ class RESTTableOperations implements TableOperations {
             String.format("Update type %s is not supported", updateType));
     }
 
+    Map<String, String> requestHeaders = this.headers.get();
+
+    // If the client write path is enabled via the capability header
+    if (requestHeaders.containsKey("X-Iceberg-Accept-Metadata-Pointer")) {
+      TableMetadata.Builder newMetadataBuilder;
+      if (updateType == UpdateType.CREATE) {
+        newMetadataBuilder =
+            TableMetadata.buildFrom(
+                TableMetadata.newTableMetadata(
+                    metadata.schema(),
+                    metadata.spec(),
+                    metadata.sortOrder(),
+                    metadata.location(),
+                    metadata.properties()));
+      } else {
+        TableMetadata startBase = updateType == UpdateType.REPLACE ? replaceBase : base;
+        newMetadataBuilder = TableMetadata.buildFrom(startBase);
+      }
+
+      for (MetadataUpdate update : updates) {
+        update.applyTo(newMetadataBuilder);
+      }
+      TableMetadata newMetadata = newMetadataBuilder.build();
+
+      int newVersion =
+          newMetadata.lastSequenceNumber() == 0 ? 0 : (int) newMetadata.lastSequenceNumber() + 1;
+      String newLocation =
+          metadataFileLocation(
+              "v" + newVersion + "-" + java.util.UUID.randomUUID() + ".metadata.json");
+
+      org.apache.iceberg.io.OutputFile outputFile = io().newOutputFile(newLocation);
+      TableMetadataParser.overwrite(newMetadata, outputFile);
+
+      updates =
+          ImmutableList.of(
+              new MetadataUpdate.SetProperties(
+                  java.util.Map.of("REST_METADATA_LOCATION", newLocation)));
+    }
+
     UpdateTableRequest request = new UpdateTableRequest(requirements, updates);
 
     // the error handler will throw necessary exceptions like CommitFailedException and
@@ -170,12 +210,20 @@ class RESTTableOperations implements TableOperations {
   }
 
   private TableMetadata updateCurrentMetadata(LoadTableResponse response) {
+    TableMetadata newMetadata = response.tableMetadata();
+    if (newMetadata == null) {
+      Preconditions.checkArgument(
+          response.metadataLocation() != null,
+          "Invalid response: must have metadata or metadata-location");
+      newMetadata = TableMetadataParser.read(io(), response.metadataLocation());
+    }
+
     // LoadTableResponse is used to deserialize the response, but config is not allowed by the REST
     // spec so it can be
     // safely ignored. there is no requirement to update config on refresh or commit.
     if (current == null
         || !Objects.equals(current.metadataFileLocation(), response.metadataLocation())) {
-      this.current = response.tableMetadata();
+      this.current = newMetadata;
     }
 
     return current;
