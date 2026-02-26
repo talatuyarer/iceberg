@@ -35,6 +35,9 @@ import java.util.stream.Collectors;
 import org.apache.iceberg.BaseMetadataTable;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.BaseTransaction;
+import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.IncrementalAppendScan;
+import org.apache.iceberg.MetadataUpdate;
 import org.apache.iceberg.MetadataUpdate.UpgradeFormatVersion;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
@@ -432,14 +435,27 @@ public class CatalogHandlers {
                 }
 
                 // apply changes
-                TableMetadata.Builder metadataBuilder = TableMetadata.buildFrom(base);
-                request.updates().forEach(update -> update.applyTo(metadataBuilder));
-
-                TableMetadata updated = metadataBuilder.build();
-                if (updated.changes().isEmpty()) {
-                  // do not commit if the metadata has not changed
-                  return;
+              TableMetadata.Builder metadataBuilder = TableMetadata.buildFrom(base);
+              
+              String newLocation = null;
+              for (MetadataUpdate update : request.updates()) {
+                if (update instanceof MetadataUpdate.SetProperties) {
+                   MetadataUpdate.SetProperties setProps = (MetadataUpdate.SetProperties) update;
+                   if (setProps.updated().containsKey("REST_METADATA_LOCATION")) {
+                      newLocation = setProps.updated().get("REST_METADATA_LOCATION");
+                      continue;
+                   }
                 }
+                update.applyTo(metadataBuilder);
+              }
+
+              TableMetadata updated = metadataBuilder.build();
+              if (newLocation != null) {
+                  updated = TableMetadata.buildFrom(base).withMetadataLocation(newLocation).build();
+              } else if (updated.changes().isEmpty()) {
+                // do not commit if the metadata has not changed
+                return;
+              }
 
                 // commit
                 taskOps.commit(base, updated);

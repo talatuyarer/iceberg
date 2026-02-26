@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.CatalogProperties;
@@ -40,6 +41,8 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
+import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.Transaction;
 import org.apache.iceberg.Transactions;
 import org.apache.iceberg.catalog.BaseViewSessionCatalog;
@@ -158,6 +161,9 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
   private Integer pageSize = null;
   private CloseableGroup closeables = null;
   private Set<Endpoint> endpoints;
+  private Map<String, String> capabilityHeaders = Map.of();
+  private Supplier<Map<String, String>> mutationHeaders = Map::of;
+
 
   enum SnapshotMode {
     ALL,
@@ -210,6 +216,11 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     // build the final configuration and set up the catalog's auth
     Map<String, String> mergedProps = config.merge(props);
 
+    if (PropertyUtil.propertyAsBoolean(mergedProps, "rest.metadata-by-reference.enabled", false)) {
+      this.capabilityHeaders = ImmutableMap.of("X-Iceberg-Accept-Metadata-Pointer", "true");
+    }
+
+    this.mutationHeaders = () -> capabilityHeaders;
     if (config.endpoints().isEmpty()) {
       this.endpoints =
           PropertyUtil.propertyAsBoolean(mergedProps, VIEW_ENDPOINTS_SUPPORTED, false)
@@ -376,7 +387,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
             paths.table(identifier),
             mode.params(),
             LoadTableResponse.class,
-            Map.of(),
+            capabilityHeaders,
             ErrorHandlers.tableErrorHandler());
   }
 
@@ -423,11 +434,14 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
     AuthSession tableSession =
         authManager.tableSession(finalIdentifier, tableConf, contextualSession);
+
+    List<Credential> credentials = response.credentials();
+    FileIO tableIO = tableFileIO(context, tableConf, credentials);
     TableMetadata tableMetadata;
 
     if (snapshotMode == SnapshotMode.REFS) {
       tableMetadata =
-          TableMetadata.buildFrom(response.tableMetadata())
+          TableMetadata.buildFrom(resolveMetadata(tableIO, response))
               .withMetadataLocation(response.metadataLocation())
               .setPreviousFileLocation(null)
               .setSnapshotsSupplier(
@@ -438,7 +452,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
               .discardChanges()
               .build();
     } else {
-      tableMetadata = response.tableMetadata();
+      tableMetadata = resolveMetadata(tableIO, response);
     }
 
     RESTClient tableClient = client.withAuthSession(tableSession);
@@ -521,13 +535,14 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     Map<String, String> tableConf = response.config();
     AuthSession tableSession = authManager.tableSession(ident, tableConf, contextualSession);
     RESTClient tableClient = client.withAuthSession(tableSession);
+    FileIO tableIO = tableFileIO(context, tableConf, response.credentials());
     RESTTableOperations ops =
         new RESTTableOperations(
             tableClient,
             paths.table(ident),
-            Map::of,
-            tableFileIO(context, tableConf, response.credentials()),
-            response.tableMetadata(),
+            mutationHeaders,
+            tableIO,
+            resolveMetadata(tableIO, response),
             endpoints);
 
     trackFileIO(ops);
@@ -780,13 +795,14 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
       Map<String, String> tableConf = response.config();
       AuthSession tableSession = authManager.tableSession(ident, tableConf, contextualSession);
       RESTClient tableClient = client.withAuthSession(tableSession);
+      FileIO tableIO = tableFileIO(context, tableConf, response.credentials());
       RESTTableOperations ops =
           new RESTTableOperations(
               tableClient,
               paths.table(ident),
-              Map::of,
-              tableFileIO(context, tableConf, response.credentials()),
-              response.tableMetadata(),
+              mutationHeaders,
+              tableIO,
+              resolveMetadata(tableIO, response),
               endpoints);
 
       trackFileIO(ops);
@@ -804,15 +820,16 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
       Map<String, String> tableConf = response.config();
       AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
       AuthSession tableSession = authManager.tableSession(ident, tableConf, contextualSession);
-      TableMetadata meta = response.tableMetadata();
 
       RESTClient tableClient = client.withAuthSession(tableSession);
+      FileIO tableIO = tableFileIO(context, tableConf, response.credentials());
+      TableMetadata meta = resolveMetadata(tableIO, response);
       RESTTableOperations ops =
           new RESTTableOperations(
               tableClient,
               paths.table(ident),
-              Map::of,
-              tableFileIO(context, tableConf, response.credentials()),
+              mutationHeaders,
+              tableIO,
               RESTTableOperations.UpdateType.CREATE,
               createChanges(meta),
               meta,
@@ -837,7 +854,8 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
       Map<String, String> tableConf = response.config();
       AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
       AuthSession tableSession = authManager.tableSession(ident, tableConf, contextualSession);
-      TableMetadata base = response.tableMetadata();
+      FileIO tableIO = tableFileIO(context, tableConf, response.credentials());
+      TableMetadata base = resolveMetadata(tableIO, response);
 
       propertiesBuilder.putAll(tableOverrideProperties());
       Map<String, String> tableProperties = propertiesBuilder.buildKeepingLast();
@@ -874,8 +892,8 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
           new RESTTableOperations(
               tableClient,
               paths.table(ident),
-              Map::of,
-              tableFileIO(context, tableConf, response.credentials()),
+              mutationHeaders,
+              tableIO,
               RESTTableOperations.UpdateType.REPLACE,
               changes.build(),
               base,
@@ -1190,7 +1208,19 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
     client
         .withAuthSession(contextualSession)
-        .post(paths.renameView(), request, null, Map.of(), ErrorHandlers.viewErrorHandler());
+        .post(paths.renameView(), request, null, mutationHeaders, ErrorHandlers.viewErrorHandler());
+  }
+
+  private TableMetadata resolveMetadata(FileIO fileIO, LoadTableResponse response) {
+    if (response.tableMetadata() != null) {
+      return response.tableMetadata();
+    }
+
+    Preconditions.checkArgument(
+        response.metadataLocation() != null,
+        "Invalid response: must have metadata or metadata-location");
+
+    return TableMetadataParser.read(fileIO, response.metadataLocation());
   }
 
   private class RESTViewBuilder implements ViewBuilder {

@@ -55,7 +55,12 @@ public class LoadTableResponseParser {
     }
 
     gen.writeFieldName(METADATA);
-    TableMetadataParser.toJson(response.tableMetadata(), gen);
+    if (response.tableMetadata() != null) {
+      TableMetadataParser.toJson(response.tableMetadata(), gen);
+    } else {
+      gen.writeStartObject();
+      gen.writeEndObject();
+    }
 
     if (!response.config().isEmpty()) {
       JsonUtil.writeStringMap(CONFIG, response.config(), gen);
@@ -85,13 +90,22 @@ public class LoadTableResponseParser {
       metadataLocation = JsonUtil.getString(METADATA_LOCATION, json);
     }
 
-    TableMetadata metadata = TableMetadataParser.fromJson(JsonUtil.get(METADATA, json));
+    TableMetadata metadata = null;
+    JsonNode metadataNode = JsonUtil.get(METADATA, json);
+    if (metadataNode != null && metadataNode.isObject() && !metadataNode.isEmpty()) {
+      metadata = TableMetadataParser.fromJson(metadataNode);
+    }
 
-    if (null != metadataLocation) {
+    if (null != metadataLocation && metadata != null) {
       metadata = TableMetadata.buildFrom(metadata).withMetadataLocation(metadataLocation).build();
     }
 
-    LoadTableResponse.Builder builder = LoadTableResponse.builder().withTableMetadata(metadata);
+    LoadTableResponse.Builder builder;
+    if (metadata != null) {
+      builder = LoadTableResponse.builder().withTableMetadata(metadata);
+    } else {
+      builder = LoadTableResponse.builder().withMetadataLocationOnly(metadataLocation);
+    }
 
     if (json.hasNonNull(CONFIG)) {
       builder.addAllConfig(JsonUtil.getStringMap(CONFIG, json));
