@@ -42,7 +42,6 @@ import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.ErrorResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.util.LocationUtil;
-import org.apache.iceberg.exceptions.CommitStateUnknownException;
 
 class RESTTableOperations implements TableOperations {
   private static final String METADATA_FOLDER_NAME = "metadata";
@@ -153,18 +152,19 @@ class RESTTableOperations implements TableOperations {
     }
 
     Map<String, String> requestHeaders = this.headers.get();
-    
+
     // If the client write path is enabled via the capability header
     if (requestHeaders.containsKey("X-Iceberg-Accept-Metadata-Pointer")) {
       TableMetadata.Builder newMetadataBuilder;
       if (updateType == UpdateType.CREATE) {
-        newMetadataBuilder = TableMetadata.buildFrom(TableMetadata.newTableMetadata(
-            metadata.schema(),
-            metadata.spec(),
-            metadata.sortOrder(),
-            metadata.location(),
-            metadata.properties()
-        ));
+        newMetadataBuilder =
+            TableMetadata.buildFrom(
+                TableMetadata.newTableMetadata(
+                    metadata.schema(),
+                    metadata.spec(),
+                    metadata.sortOrder(),
+                    metadata.location(),
+                    metadata.properties()));
       } else {
         TableMetadata startBase = updateType == UpdateType.REPLACE ? replaceBase : base;
         newMetadataBuilder = TableMetadata.buildFrom(startBase);
@@ -175,16 +175,19 @@ class RESTTableOperations implements TableOperations {
       }
       TableMetadata newMetadata = newMetadataBuilder.build();
 
-      int newVersion = newMetadata.lastSequenceNumber() == 0 ? 0 : 
-                       (int) newMetadata.lastSequenceNumber() + 1;
-      String newLocation = metadataFileLocation("v" + newVersion + "-" + java.util.UUID.randomUUID() + ".metadata.json");
-      
+      int newVersion =
+          newMetadata.lastSequenceNumber() == 0 ? 0 : (int) newMetadata.lastSequenceNumber() + 1;
+      String newLocation =
+          metadataFileLocation(
+              "v" + newVersion + "-" + java.util.UUID.randomUUID() + ".metadata.json");
+
       org.apache.iceberg.io.OutputFile outputFile = io().newOutputFile(newLocation);
       TableMetadataParser.overwrite(newMetadata, outputFile);
-      
-      updates = ImmutableList.of(new MetadataUpdate.SetProperties(
-          java.util.Map.of("REST_METADATA_LOCATION", newLocation)
-      ));
+
+      updates =
+          ImmutableList.of(
+              new MetadataUpdate.SetProperties(
+                  java.util.Map.of("REST_METADATA_LOCATION", newLocation)));
     }
 
     UpdateTableRequest request = new UpdateTableRequest(requirements, updates);

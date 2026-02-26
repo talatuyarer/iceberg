@@ -61,18 +61,17 @@ public class TestLoadTableResponseParser {
 
   @Test
   public void pointerParsing() {
-      String json = "{\"metadata-location\":\"custom-location\",\"metadata\":{}}";
-      LoadTableResponse response = LoadTableResponseParser.fromJson(json);
-      assertThat(response.metadataLocation()).isEqualTo("custom-location");
-      assertThat(response.tableMetadata()).isNull();
+    String json = "{\"metadata-location\":\"custom-location\",\"metadata\":{}}";
+    LoadTableResponse response = LoadTableResponseParser.fromJson(json);
+    assertThat(response.metadataLocation()).isEqualTo("custom-location");
+    assertThat(response.tableMetadata()).isNull();
 
-      String serialized = LoadTableResponseParser.toJson(response);
-      assertThat(serialized).isEqualTo(json);
+    String serialized = LoadTableResponseParser.toJson(response);
+    assertThat(serialized).isEqualTo(json);
 
-      assertThatThrownBy(
-              () -> LoadTableResponseParser.fromJson("{\"metadata\":{}}"))
-              .isInstanceOf(IllegalArgumentException.class)
-              .hasMessage("Invalid response: must have metadata or metadata-location");
+    assertThatThrownBy(() -> LoadTableResponseParser.fromJson("{\"metadata\":{}}"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Invalid response: must have metadata or metadata-location");
   }
 
   @Test

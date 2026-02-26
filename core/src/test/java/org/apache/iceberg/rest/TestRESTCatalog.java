@@ -987,6 +987,7 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
             any(),
             any());
   }
+
   @Test
   public void testClientDrivenMetadataWrite() throws Exception {
     RESTCatalogAdapter adapter = Mockito.spy(new RESTCatalogAdapter(backendCatalog));
@@ -1007,10 +1008,11 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
       catalog.createNamespace(TABLE.namespace());
     }
 
-    // 1. Create a table. The adapter should return a LoadTableResponse but strip the metadata Payload. 
-    // RESTTableOperations should have written the initial metadata to FileIO. 
+    // 1. Create a table. The adapter should return a LoadTableResponse but strip the metadata
+    // Payload.
+    // RESTTableOperations should have written the initial metadata to FileIO.
     Table table = catalog.createTable(TABLE, SCHEMA);
-    
+
     assertThat(table.schema().columns()).hasSize(SCHEMA.columns().size());
 
     // 2. Perform a mutation.
@@ -1025,25 +1027,29 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
         .commit();
 
     // 3. Verify the pointer write happened
-    // The UpdateTableRequest sent to the server should only contain SetProperties with REST_METADATA_LOCATION
+    // The UpdateTableRequest sent to the server should only contain SetProperties with
+    // REST_METADATA_LOCATION
     verify(adapter, atLeastOnce())
         .execute(
             org.mockito.ArgumentMatchers.<org.apache.iceberg.rest.HTTPRequest>argThat(
                 req -> {
-                  if (req.method() == org.apache.iceberg.rest.HTTPRequest.HTTPMethod.POST && req.path().contains("/tables/")) {
+                  if (req.method() == org.apache.iceberg.rest.HTTPRequest.HTTPMethod.POST
+                      && req.path().contains("/tables/")) {
                     Object body = req.body();
                     if (body instanceof org.apache.iceberg.rest.requests.UpdateTableRequest) {
                       org.apache.iceberg.rest.requests.UpdateTableRequest updateReq =
                           (org.apache.iceberg.rest.requests.UpdateTableRequest) body;
-                      return updateReq.updates().stream().anyMatch(u ->
-                          u instanceof org.apache.iceberg.MetadataUpdate.SetProperties &&
-                          ((org.apache.iceberg.MetadataUpdate.SetProperties) u).updated().containsKey("REST_METADATA_LOCATION")
-                      );
+                      return updateReq.updates().stream()
+                          .anyMatch(
+                              u ->
+                                  u instanceof org.apache.iceberg.MetadataUpdate.SetProperties
+                                      && ((org.apache.iceberg.MetadataUpdate.SetProperties) u)
+                                          .updated()
+                                          .containsKey("REST_METADATA_LOCATION"));
                     }
                   }
                   return false;
-                }
-            ),
+                }),
             eq(LoadTableResponse.class),
             org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.any(),
@@ -2963,9 +2969,12 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
       pointerCatalog.initialize(
           "prod",
           ImmutableMap.of(
-              CatalogProperties.URI, "ignored",
-              CatalogProperties.FILE_IO_IMPL, "org.apache.iceberg.inmemory.InMemoryFileIO",
-              "rest.metadata-by-reference.enabled", "true"));
+              CatalogProperties.URI,
+              "ignored",
+              CatalogProperties.FILE_IO_IMPL,
+              "org.apache.iceberg.inmemory.InMemoryFileIO",
+              "rest.metadata-by-reference.enabled",
+              "true"));
 
       Namespace ns2 = Namespace.of("ns2");
       TableIdentifier tbl2 = TableIdentifier.of(ns2, "tbl2");
@@ -2978,12 +2987,14 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
 
       Schema expectedSchema =
           new Schema(
-              Types.NestedField.required(1, "id", Types.IntegerType.get(), "unique ID \uD83E\uDD2A"),
+              Types.NestedField.required(
+                  1, "id", Types.IntegerType.get(), "unique ID \uD83E\uDD2A"),
               Types.NestedField.required(2, "data", Types.StringType.get()));
 
       assertThat(table.schema().asStruct()).isEqualTo(expectedSchema.asStruct());
 
-      PartitionSpec expectedSpec = PartitionSpec.builderFor(expectedSchema).bucket("id", 16).build();
+      PartitionSpec expectedSpec =
+          PartitionSpec.builderFor(expectedSchema).bucket("id", 16).build();
       assertThat(table.spec().fields()).isEqualTo(expectedSpec.fields());
 
       Table loaded = pointerCatalog.loadTable(tbl2);
@@ -2993,9 +3004,7 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
       boolean hasCapabilityHeader =
           requests.stream()
               .filter(req -> req.method() == HTTPMethod.GET && req.path().contains("tables"))
-              .anyMatch(
-                  req ->
-                      req.headers().contains("X-Iceberg-Accept-Metadata-Pointer"));
+              .anyMatch(req -> req.headers().contains("X-Iceberg-Accept-Metadata-Pointer"));
 
       assertThat(hasCapabilityHeader).as("Client should send pointer capability header").isTrue();
     }

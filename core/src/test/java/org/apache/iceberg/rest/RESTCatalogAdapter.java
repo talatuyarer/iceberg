@@ -287,7 +287,8 @@ public class RESTCatalogAdapter extends BaseHTTPClient {
 
   private <T extends RESTResponse> T interceptResponse(
       HTTPRequest httpRequest, Class<T> responseType, T response) {
-    if (response instanceof LoadTableResponse && httpRequest.headers().contains("X-Iceberg-Accept-Metadata-Pointer")) {
+    if (response instanceof LoadTableResponse
+        && httpRequest.headers().contains("X-Iceberg-Accept-Metadata-Pointer")) {
       LoadTableResponse loadResponse = (LoadTableResponse) response;
       return responseType.cast(
           LoadTableResponse.builder()
@@ -330,18 +331,18 @@ public class RESTCatalogAdapter extends BaseHTTPClient {
           }
 
           String pageToken = PropertyUtil.propertyAsString(vars, "pageToken", null);
-        String pageSize = PropertyUtil.propertyAsString(vars, "pageSize", null);
+          String pageSize = PropertyUtil.propertyAsString(vars, "pageSize", null);
 
-        if (pageSize != null) {
-          return castResponse(
-              responseType,
-              CatalogHandlers.listNamespaces(asNamespaceCatalog, ns, pageToken, pageSize));
-        } else {
-          return castResponse(
-              responseType, CatalogHandlers.listNamespaces(asNamespaceCatalog, ns));
+          if (pageSize != null) {
+            return castResponse(
+                responseType,
+                CatalogHandlers.listNamespaces(asNamespaceCatalog, ns, pageToken, pageSize));
+          } else {
+            return castResponse(
+                responseType, CatalogHandlers.listNamespaces(asNamespaceCatalog, ns));
+          }
         }
-      }
-      break;
+        break;
 
       case CREATE_NAMESPACE:
         if (asNamespaceCatalog != null) {
@@ -352,19 +353,19 @@ public class RESTCatalogAdapter extends BaseHTTPClient {
         break;
 
       case NAMESPACE_EXISTS:
-      if (asNamespaceCatalog != null) {
-        CatalogHandlers.namespaceExists(asNamespaceCatalog, namespaceFromPathVars(vars));
-        return null;
-      }
-      break;
+        if (asNamespaceCatalog != null) {
+          CatalogHandlers.namespaceExists(asNamespaceCatalog, namespaceFromPathVars(vars));
+          return null;
+        }
+        break;
 
-    case LOAD_NAMESPACE:
-      if (asNamespaceCatalog != null) {
-        Namespace namespace = namespaceFromPathVars(vars);
-        return castResponse(
-            responseType, CatalogHandlers.loadNamespace(asNamespaceCatalog, namespace));
-      }
-      break;
+      case LOAD_NAMESPACE:
+        if (asNamespaceCatalog != null) {
+          Namespace namespace = namespaceFromPathVars(vars);
+          return castResponse(
+              responseType, CatalogHandlers.loadNamespace(asNamespaceCatalog, namespace));
+        }
+        break;
 
       case DROP_NAMESPACE:
         if (asNamespaceCatalog != null) {
@@ -385,17 +386,17 @@ public class RESTCatalogAdapter extends BaseHTTPClient {
         break;
 
       case LIST_TABLES:
-      {
-        Namespace namespace = namespaceFromPathVars(vars);
-        String pageToken = PropertyUtil.propertyAsString(vars, "pageToken", null);
-        String pageSize = PropertyUtil.propertyAsString(vars, "pageSize", null);
-        if (pageSize != null) {
-          return castResponse(
-              responseType, CatalogHandlers.listTables(catalog, namespace, pageToken, pageSize));
-        } else {
-          return castResponse(responseType, CatalogHandlers.listTables(catalog, namespace));
+        {
+          Namespace namespace = namespaceFromPathVars(vars);
+          String pageToken = PropertyUtil.propertyAsString(vars, "pageToken", null);
+          String pageSize = PropertyUtil.propertyAsString(vars, "pageSize", null);
+          if (pageSize != null) {
+            return castResponse(
+                responseType, CatalogHandlers.listTables(catalog, namespace, pageToken, pageSize));
+          } else {
+            return castResponse(responseType, CatalogHandlers.listTables(catalog, namespace));
+          }
         }
-      }
 
       case CREATE_TABLE:
         {
