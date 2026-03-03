@@ -2987,8 +2987,7 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
 
       Schema expectedSchema =
           new Schema(
-              Types.NestedField.required(
-                  1, "id", Types.IntegerType.get(), "unique ID 🤪"),
+              Types.NestedField.required(1, "id", Types.IntegerType.get(), "unique ID 🤪"),
               Types.NestedField.required(2, "data", Types.StringType.get()));
 
       assertThat(table.schema().asStruct()).isEqualTo(expectedSchema.asStruct());
