@@ -2517,7 +2517,7 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     Table table = catalog.loadTable(TABLE);
     Mockito.doThrow(new NotAuthorizedException("not authorized"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST), any(), any(), any());
+        .execute(reqMatcher(HTTPMethod.POST), any(), any(), any(), any());
     assertThatThrownBy(() -> catalog.loadTable(TABLE).newFastAppend().appendFile(file).commit())
         .isInstanceOf(NotAuthorizedException.class)
         .hasMessage("not authorized");
@@ -2554,7 +2554,7 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
 
     Mockito.doThrow(new ServiceFailureException("some service failure"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST), any(), any(), any());
+        .execute(reqMatcher(HTTPMethod.POST), any(), any(), any(), any());
     assertThatThrownBy(() -> catalog.loadTable(TABLE).newFastAppend().appendFile(FILE_A).commit())
         .isInstanceOf(ServiceFailureException.class)
         .hasMessage("some service failure");
@@ -2588,7 +2588,12 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     TableIdentifier newTable = TableIdentifier.of(TABLE.namespace(), "some_table");
     Mockito.doThrow(new NotAuthorizedException("not authorized"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(newTable)), any(), any(), any());
+        .execute(
+            reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(newTable)),
+            any(),
+            any(),
+            any(),
+            any());
 
     Transaction createTableTransaction = catalog.newCreateTableTransaction(newTable, SCHEMA);
     createTableTransaction.newAppend().appendFile(FILE_A).commit();
@@ -2635,7 +2640,12 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     TableIdentifier newTable = TableIdentifier.of(TABLE.namespace(), "some_table");
     Mockito.doThrow(new ServiceFailureException("some service failure"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(newTable)), any(), any(), any());
+        .execute(
+            reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(newTable)),
+            any(),
+            any(),
+            any(),
+            any());
 
     Transaction createTableTransaction = catalog.newCreateTableTransaction(newTable, SCHEMA);
     createTableTransaction.newAppend().appendFile(FILE_A).commit();
@@ -2676,7 +2686,8 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     catalog.createTable(TABLE, SCHEMA);
     Mockito.doThrow(new NotAuthorizedException("not authorized"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(TABLE)), any(), any(), any());
+        .execute(
+            reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(TABLE)), any(), any(), any(), any());
 
     Transaction replaceTableTransaction = catalog.newReplaceTableTransaction(TABLE, SCHEMA, false);
     replaceTableTransaction.newAppend().appendFile(FILE_A).commit();
@@ -2719,7 +2730,8 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     catalog.createTable(TABLE, SCHEMA);
     Mockito.doThrow(new ServiceFailureException("some service failure"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(TABLE)), any(), any(), any());
+        .execute(
+            reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(TABLE)), any(), any(), any(), any());
 
     Transaction replaceTableTransaction = catalog.newReplaceTableTransaction(TABLE, SCHEMA, false);
     replaceTableTransaction.newAppend().appendFile(FILE_A).commit();

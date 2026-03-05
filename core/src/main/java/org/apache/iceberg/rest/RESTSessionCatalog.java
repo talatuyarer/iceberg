@@ -294,7 +294,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
                   paths.tables(ns),
                   queryParams,
                   ListTablesResponse.class,
-                  Map.of(),
+                  mutationHeaders.get(),
                   ErrorHandlers.namespaceErrorHandler());
       pageToken = response.nextPageToken();
       tables.addAll(response.identifiers());
@@ -312,7 +312,11 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
       AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
       client
           .withAuthSession(contextualSession)
-          .delete(paths.table(identifier), null, Map.of(), ErrorHandlers.tableErrorHandler());
+          .delete(
+              paths.table(identifier),
+              null,
+              mutationHeaders.get(),
+              ErrorHandlers.tableErrorHandler());
       return true;
     } catch (NoSuchTableException e) {
       return false;
@@ -332,7 +336,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
               paths.table(identifier),
               ImmutableMap.of("purgeRequested", "true"),
               null,
-              Map.of(),
+              mutationHeaders.get(),
               ErrorHandlers.tableErrorHandler());
       return true;
     } catch (NoSuchTableException e) {
@@ -353,7 +357,12 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
     client
         .withAuthSession(contextualSession)
-        .post(paths.rename(), request, null, Map.of(), ErrorHandlers.tableErrorHandler());
+        .post(
+            paths.rename(),
+            request,
+            null,
+            mutationHeaders.get(),
+            ErrorHandlers.tableErrorHandler());
   }
 
   @Override
@@ -364,7 +373,8 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
         AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
         client
             .withAuthSession(contextualSession)
-            .head(paths.table(identifier), Map.of(), ErrorHandlers.tableErrorHandler());
+            .head(
+                paths.table(identifier), mutationHeaders.get(), ErrorHandlers.tableErrorHandler());
         return true;
       } else {
         // fallback in order to work with 1.7.x and older servers
@@ -458,7 +468,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
         new RESTTableOperations(
             tableClient,
             paths.table(finalIdentifier),
-            Map::of,
+            mutationHeaders,
             tableFileIO(context, tableConf, response.credentials()),
             tableMetadata,
             endpoints);
@@ -527,7 +537,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
                 paths.register(ident.namespace()),
                 request,
                 LoadTableResponse.class,
-                Map.of(),
+                mutationHeaders.get(),
                 ErrorHandlers.tableErrorHandler());
 
     Map<String, String> tableConf = response.config();
@@ -564,7 +574,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
             paths.namespaces(),
             request,
             CreateNamespaceResponse.class,
-            Map.of(),
+            mutationHeaders.get(),
             ErrorHandlers.namespaceErrorHandler());
   }
 
@@ -595,7 +605,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
                   paths.namespaces(),
                   queryParams,
                   ListNamespacesResponse.class,
-                  Map.of(),
+                  mutationHeaders.get(),
                   ErrorHandlers.namespaceErrorHandler());
       pageToken = response.nextPageToken();
       namespaces.addAll(response.namespaces());
@@ -612,7 +622,10 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
         AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
         client
             .withAuthSession(contextualSession)
-            .head(paths.namespace(namespace), Map.of(), ErrorHandlers.namespaceErrorHandler());
+            .head(
+                paths.namespace(namespace),
+                mutationHeaders.get(),
+                ErrorHandlers.namespaceErrorHandler());
         return true;
       } else {
         // fallback in order to work with 1.7.x and older servers
@@ -636,7 +649,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
             .get(
                 paths.namespace(ns),
                 GetNamespaceResponse.class,
-                Map.of(),
+                mutationHeaders.get(),
                 ErrorHandlers.namespaceErrorHandler());
     return response.properties();
   }
@@ -650,7 +663,11 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
       AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
       client
           .withAuthSession(contextualSession)
-          .delete(paths.namespace(ns), null, Map.of(), ErrorHandlers.dropNamespaceErrorHandler());
+          .delete(
+              paths.namespace(ns),
+              null,
+              mutationHeaders.get(),
+              ErrorHandlers.dropNamespaceErrorHandler());
       return true;
     } catch (NoSuchNamespaceException e) {
       return false;
@@ -674,7 +691,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
                 paths.namespaceProperties(ns),
                 request,
                 UpdateNamespacePropertiesResponse.class,
-                Map.of(),
+                mutationHeaders.get(),
                 ErrorHandlers.namespaceErrorHandler());
 
     return !response.updated().isEmpty();
@@ -787,7 +804,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
                   paths.tables(ident.namespace()),
                   request,
                   LoadTableResponse.class,
-                  Map.of(),
+                  mutationHeaders.get(),
                   ErrorHandlers.tableErrorHandler());
 
       Map<String, String> tableConf = response.config();
@@ -940,7 +957,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
               paths.tables(ident.namespace()),
               request,
               LoadTableResponse.class,
-              Map.of(),
+              mutationHeaders.get(),
               ErrorHandlers.tableErrorHandler());
     }
   }
@@ -1080,7 +1097,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
             paths.commitTransaction(),
             new CommitTransactionRequest(tableChanges),
             null,
-            Map.of(),
+            mutationHeaders.get(),
             ErrorHandlers.tableCommitHandler());
   }
 
@@ -1108,7 +1125,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
                   paths.views(namespace),
                   queryParams,
                   ListTablesResponse.class,
-                  Map.of(),
+                  mutationHeaders.get(),
                   ErrorHandlers.namespaceErrorHandler());
       pageToken = response.nextPageToken();
       views.addAll(response.identifiers());
@@ -1125,7 +1142,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
         AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
         client
             .withAuthSession(contextualSession)
-            .head(paths.view(identifier), Map.of(), ErrorHandlers.viewErrorHandler());
+            .head(paths.view(identifier), mutationHeaders.get(), ErrorHandlers.viewErrorHandler());
         return true;
       } else {
         // fallback in order to work with 1.7.x and older servers
@@ -1155,7 +1172,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
             .get(
                 paths.view(identifier),
                 LoadViewResponse.class,
-                Map.of(),
+                mutationHeaders.get(),
                 ErrorHandlers.viewErrorHandler());
 
     Map<String, String> tableConf = response.config();
@@ -1166,7 +1183,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
         new RESTViewOperations(
             client.withAuthSession(tableSession),
             paths.view(identifier),
-            Map::of,
+            mutationHeaders,
             metadata,
             endpoints);
 
@@ -1187,7 +1204,11 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
       AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
       client
           .withAuthSession(contextualSession)
-          .delete(paths.view(identifier), null, Map.of(), ErrorHandlers.viewErrorHandler());
+          .delete(
+              paths.view(identifier),
+              null,
+              mutationHeaders.get(),
+              ErrorHandlers.viewErrorHandler());
       return true;
     } catch (NoSuchViewException e) {
       return false;
@@ -1206,7 +1227,12 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     AuthSession contextualSession = authManager.contextualSession(context, catalogAuth);
     client
         .withAuthSession(contextualSession)
-        .post(paths.renameView(), request, null, mutationHeaders, ErrorHandlers.viewErrorHandler());
+        .post(
+            paths.renameView(),
+            request,
+            null,
+            mutationHeaders.get(),
+            ErrorHandlers.viewErrorHandler());
   }
 
   private TableMetadata resolveMetadata(FileIO fileIO, LoadTableResponse response) {
@@ -1348,7 +1374,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
                   paths.views(identifier.namespace()),
                   request,
                   LoadViewResponse.class,
-                  Map.of(),
+                  mutationHeaders.get(),
                   ErrorHandlers.viewErrorHandler());
 
       Map<String, String> tableConf = response.config();
@@ -1357,7 +1383,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
           new RESTViewOperations(
               client.withAuthSession(tableSession),
               paths.view(identifier),
-              Map::of,
+              mutationHeaders,
               response.metadata(),
               endpoints);
 
@@ -1397,7 +1423,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
           .get(
               paths.view(identifier),
               LoadViewResponse.class,
-              Map.of(),
+              mutationHeaders.get(),
               ErrorHandlers.viewErrorHandler());
     }
 
@@ -1448,7 +1474,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
           new RESTViewOperations(
               client.withAuthSession(tableSession),
               paths.view(identifier),
-              Map::of,
+              mutationHeaders,
               metadata,
               endpoints);
 
