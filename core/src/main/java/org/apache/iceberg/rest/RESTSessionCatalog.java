@@ -214,7 +214,7 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
     // build the final configuration and set up the catalog's auth
     Map<String, String> mergedProps = config.merge(props);
 
-    if (PropertyUtil.propertyAsBoolean(mergedProps, "rest.metadata-by-reference.enabled", false)) {
+    if (PropertyUtil.propertyAsBoolean(mergedProps, "rest.metadata-by-reference.enabled", true)) {
       this.capabilityHeaders = ImmutableMap.of("X-Iceberg-Accept-Metadata-Pointer", "true");
     }
 
