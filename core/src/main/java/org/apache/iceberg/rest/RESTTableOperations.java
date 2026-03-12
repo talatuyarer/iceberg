@@ -184,10 +184,16 @@ class RESTTableOperations implements TableOperations {
       org.apache.iceberg.io.OutputFile outputFile = io().newOutputFile(newLocation);
       TableMetadataParser.overwrite(newMetadata, outputFile);
 
-      updates =
-          ImmutableList.of(
-              new MetadataUpdate.SetProperties(
-                  java.util.Map.of("REST_METADATA_LOCATION", newLocation)));
+      java.util.Map<String, String> props = new java.util.HashMap<>();
+      props.put("REST_METADATA_LOCATION", newLocation);
+      if (updateType != UpdateType.CREATE) {
+        TableMetadata startBase = updateType == UpdateType.REPLACE ? replaceBase : base;
+        if (startBase != null && startBase.metadataFileLocation() != null) {
+          props.put("PREV_REST_METADATA_LOCATION", startBase.metadataFileLocation());
+        }
+      }
+
+      updates = ImmutableList.of(new MetadataUpdate.SetProperties(props));
     }
 
     UpdateTableRequest request = new UpdateTableRequest(requirements, updates);
