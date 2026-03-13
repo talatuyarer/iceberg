@@ -192,6 +192,9 @@ class RESTTableOperations implements TableOperations {
           props.put("PREV_REST_METADATA_LOCATION", startBase.metadataFileLocation());
         }
       }
+      if (newMetadata.currentSnapshot() != null) {
+        props.put("REST_METADATA_SNAPSHOT_ID", String.valueOf(newMetadata.currentSnapshot().snapshotId()));
+      }
 
       updates = ImmutableList.of(new MetadataUpdate.SetProperties(props));
     }
