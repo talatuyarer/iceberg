@@ -193,7 +193,9 @@ class RESTTableOperations implements TableOperations {
         }
       }
       if (newMetadata.currentSnapshot() != null) {
-        props.put("REST_METADATA_SNAPSHOT_ID", String.valueOf(newMetadata.currentSnapshot().snapshotId()));
+        props.put(
+            "REST_METADATA_SNAPSHOT_ID",
+            String.valueOf(newMetadata.currentSnapshot().snapshotId()));
       }
 
       updates = ImmutableList.of(new MetadataUpdate.SetProperties(props));
