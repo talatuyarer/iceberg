@@ -30,6 +30,7 @@ import java.util.stream.Collectors;
 import org.apache.iceberg.ChangelogOperation;
 import org.apache.iceberg.ChangelogScanTask;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.Files;
 import org.apache.iceberg.IncrementalChangelogScan;
 import org.apache.iceberg.PartitionSpec;
@@ -46,6 +47,7 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.util.Pair;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -222,6 +224,41 @@ public class TestChangelogReader extends TestBase {
     assertEquals("Should have expected rows", expectedRows, internalRowsToJava(rows));
   }
 
+  @Test
+  public void testDeletedRowsScanTask() throws IOException {
+    table.newAppend().appendFile(dataFile1).commit();
+    long snapshotId1 = table.currentSnapshot().snapshotId();
+
+    List<Pair<CharSequence, Long>> deletes = Lists.newArrayList();
+    deletes.add(Pair.of(dataFile1.location(), 0L));
+    DeleteFile deleteFile = writeDeleteFile(deletes);
+
+    table.newRowDelta().addDeletes(deleteFile).commit();
+    long snapshotId2 = table.currentSnapshot().snapshotId();
+
+    CloseableIterable<ScanTaskGroup<ChangelogScanTask>> taskGroups =
+        newScan().fromSnapshotExclusive(snapshotId1).planTasks();
+
+    List<InternalRow> rows = Lists.newArrayList();
+
+    for (ScanTaskGroup<ChangelogScanTask> taskGroup : taskGroups) {
+      ChangelogRowReader reader =
+          new ChangelogRowReader(table, table.io(), taskGroup, table.schema(), false, true);
+      while (reader.next()) {
+        rows.add(reader.get().copy());
+      }
+      reader.close();
+    }
+
+    rows.sort((r1, r2) -> r1.getInt(0) - r2.getInt(0));
+
+    List<Object[]> expectedRows = Lists.newArrayList();
+    List<Record> deletedRecords = Lists.newArrayList(records1.get(0));
+    addExpectedRows(expectedRows, ChangelogOperation.DELETE, snapshotId2, 0, deletedRecords);
+
+    assertEquals("Should have expected rows", expectedRows, internalRowsToJava(rows));
+  }
+
   private IncrementalChangelogScan newScan() {
     return table.newIncrementalChangelogScan();
   }
@@ -243,12 +280,20 @@ public class TestChangelogReader extends TestBase {
   }
 
   private Object[] toJava(InternalRow row) {
-    Object[] values = new Object[row.numFields()];
-    values[0] = row.getInt(0);
-    values[1] = row.getString(1);
-    values[2] = row.getString(2);
-    values[3] = row.getInt(3);
-    values[4] = row.getLong(4);
+    Object[] values = new Object[5];
+    if (row.numFields() == 6) {
+      values[0] = row.getInt(0);
+      values[1] = row.getString(1);
+      values[2] = row.getString(3);
+      values[3] = row.getInt(4);
+      values[4] = row.getLong(5);
+    } else {
+      values[0] = row.getInt(0);
+      values[1] = row.getString(1);
+      values[2] = row.getString(2);
+      values[3] = row.getInt(3);
+      values[4] = row.getLong(4);
+    }
     return values;
   }
 
@@ -259,5 +304,14 @@ public class TestChangelogReader extends TestBase {
         Files.localOutput(File.createTempFile("junit", null, temp.toFile())),
         TestHelpers.Row.of(0),
         records);
+  }
+
+  private DeleteFile writeDeleteFile(List<Pair<CharSequence, Long>> deletes) throws IOException {
+    return FileHelpers.writeDeleteFile(
+            table,
+            Files.localOutput(File.createTempFile("junit-delete", null, temp.toFile())),
+            TestHelpers.Row.of(0),
+            deletes)
+        .first();
   }
 }

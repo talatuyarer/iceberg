@@ -101,7 +101,7 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
       return openAddedRowsScanTask((AddedRowsScanTask) task);
 
     } else if (task instanceof DeletedRowsScanTask) {
-      throw new UnsupportedOperationException("Deleted rows scan task is not supported yet");
+      return openDeletedRowsScanTask((DeletedRowsScanTask) task);
 
     } else if (task instanceof DeletedDataFileScanTask) {
       return openDeletedDataFileScanTask((DeletedDataFileScanTask) task);
@@ -110,6 +110,42 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
       throw new IllegalArgumentException(
           "Unsupported changelog scan task type: " + task.getClass().getName());
     }
+  }
+
+  private CloseableIterable<InternalRow> openDeletedRowsScanTask(DeletedRowsScanTask task) {
+    String filePath = task.file().location();
+
+    SparkDeleteFilter existingDeletes =
+        new SparkDeleteFilter(filePath, task.existingDeletes(), counter(), true);
+    SparkDeleteFilter addedDeletes =
+        new SparkDeleteFilter(filePath, task.addedDeletes(), counter(), true);
+
+    org.apache.iceberg.Schema readSchema = existingDeletes.requiredSchema();
+    if (addedDeletes.hasPosDeletes()
+        && readSchema.findField(org.apache.iceberg.MetadataColumns.ROW_POSITION.fieldId())
+            == null) {
+      java.util.List<org.apache.iceberg.types.Types.NestedField> columns =
+          org.apache.iceberg.relocated.com.google.common.collect.Lists.newArrayList(
+              readSchema.columns());
+      columns.add(org.apache.iceberg.MetadataColumns.ROW_POSITION);
+      readSchema = new org.apache.iceberg.Schema(columns);
+    }
+
+    CloseableIterable<InternalRow> liveRows = existingDeletes.filter(rows(task, readSchema));
+
+    java.util.function.Predicate<InternalRow> isPosDeleted =
+        row -> {
+          org.apache.iceberg.deletes.PositionDeleteIndex posIndex =
+              addedDeletes.deletedRowPositions();
+          return posIndex != null && posIndex.isDeleted(addedDeletes.pos(row));
+        };
+
+    java.util.function.Predicate<InternalRow> isEqDeleted =
+        addedDeletes.eqDeletedRowFilter().negate();
+
+    java.util.function.Predicate<InternalRow> isNewDeleted = isPosDeleted.or(isEqDeleted);
+
+    return CloseableIterable.filter(liveRows, isNewDeleted);
   }
 
   CloseableIterable<InternalRow> openAddedRowsScanTask(AddedRowsScanTask task) {
@@ -151,7 +187,7 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
       return addedRowsScanTaskFiles((AddedRowsScanTask) task);
 
     } else if (task instanceof DeletedRowsScanTask) {
-      throw new UnsupportedOperationException("Deleted rows scan task is not supported yet");
+      return deletedRowsScanTaskFiles((DeletedRowsScanTask) task);
 
     } else if (task instanceof DeletedDataFileScanTask) {
       return deletedDataFileScanTaskFiles((DeletedDataFileScanTask) task);
@@ -160,6 +196,13 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
       throw new IllegalArgumentException(
           "Unsupported changelog scan task type: " + task.getClass().getName());
     }
+  }
+
+  private static Stream<ContentFile<?>> deletedRowsScanTaskFiles(DeletedRowsScanTask task) {
+    DataFile file = task.file();
+    return Stream.concat(
+        Stream.of(file),
+        Stream.concat(task.addedDeletes().stream(), task.existingDeletes().stream()));
   }
 
   private static Stream<ContentFile<?>> deletedDataFileScanTaskFiles(DeletedDataFileScanTask task) {

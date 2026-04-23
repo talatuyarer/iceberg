@@ -216,6 +216,11 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
     }
 
     @Override
+    protected long pos(InternalRow row) {
+      return super.pos(row);
+    }
+
+    @Override
     protected InputFile getInputFile(String location) {
       return BaseReader.this.getInputFile(location);
     }
