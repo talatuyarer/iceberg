@@ -19,9 +19,11 @@
 package org.apache.iceberg.rest;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.apache.iceberg.LocationProviders;
@@ -155,31 +157,34 @@ class RESTTableOperations implements TableOperations {
 
     // If the client write path is enabled via the capability header
     if (requestHeaders.containsKey("X-Iceberg-Accept-Metadata-Pointer")) {
-      TableMetadata.Builder newMetadataBuilder;
+      TableMetadata newMetadata;
       if (updateType == UpdateType.CREATE) {
-        newMetadataBuilder =
-            TableMetadata.buildFrom(
-                TableMetadata.newTableMetadata(
-                    metadata.schema(),
-                    metadata.spec(),
-                    metadata.sortOrder(),
-                    metadata.location(),
-                    metadata.properties()));
+        // metadata is already the fully-built new table metadata. Rebuilding it via
+        // newTableMetadata + re-applying the create changes breaks SetCurrentSchema's
+        // "last added schema" tracking, so use it directly.
+        newMetadata = metadata;
       } else {
         TableMetadata startBase = updateType == UpdateType.REPLACE ? replaceBase : base;
-        newMetadataBuilder = TableMetadata.buildFrom(startBase);
+        TableMetadata.Builder newMetadataBuilder = TableMetadata.buildFrom(startBase);
+        for (MetadataUpdate update : updates) {
+          update.applyTo(newMetadataBuilder);
+        }
+        newMetadata = newMetadataBuilder.build();
       }
-
-      for (MetadataUpdate update : updates) {
-        update.applyTo(newMetadataBuilder);
-      }
-      TableMetadata newMetadata = newMetadataBuilder.build();
 
       int newVersion =
           newMetadata.lastSequenceNumber() == 0 ? 0 : (int) newMetadata.lastSequenceNumber() + 1;
+      String fileExtension =
+          TableMetadataParser.getFileExtension(
+              newMetadata.property(
+                  TableProperties.METADATA_COMPRESSION,
+                  TableProperties.METADATA_COMPRESSION_DEFAULT));
+      // Derive the location from newMetadata (not current(), which is null for CREATE).
       String newLocation =
           metadataFileLocation(
-              "v" + newVersion + "-" + java.util.UUID.randomUUID() + ".metadata.json");
+              newMetadata,
+              String.format(
+                  Locale.ROOT, "%05d-%s%s", newVersion, UUID.randomUUID(), fileExtension));
 
       org.apache.iceberg.io.OutputFile outputFile = io().newOutputFile(newLocation);
       TableMetadataParser.overwrite(newMetadata, outputFile);

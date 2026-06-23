@@ -644,12 +644,16 @@ public class RESTCatalogAdapter extends BaseHTTPClient {
         if (resp instanceof LoadTableResponse
             && request.headers().contains("X-Iceberg-Accept-Metadata-Pointer")) {
           LoadTableResponse loadResp = (LoadTableResponse) resp;
-          resp =
-              responseType.cast(
-                  LoadTableResponse.builder()
-                      .withMetadataLocationOnly(loadResp.metadataLocation())
-                      .addAllConfig(loadResp.config())
-                      .build());
+          // Only return a pointer when a metadata location actually exists. Staged creates carry
+          // inline metadata with no persisted location yet, so they must be returned as-is.
+          if (loadResp.metadataLocation() != null) {
+            resp =
+                responseType.cast(
+                    LoadTableResponse.builder()
+                        .withMetadataLocationOnly(loadResp.metadataLocation())
+                        .addAllConfig(loadResp.config())
+                        .build());
+          }
         }
 
         return resp;

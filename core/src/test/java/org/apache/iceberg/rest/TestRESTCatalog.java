@@ -1054,6 +1054,34 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
             org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.any());
+
+    // 4. The generated metadata file name must use the IRC-compatible digit prefix
+    // (e.g. 00000-<uuid>.metadata.json), not a "v"-prefixed name. The regular server-driven update
+    // path parses the version from that prefix, so a "v3-..." name would break a future fallback.
+    List<String> metadataLocations = new java.util.ArrayList<>();
+    for (HTTPRequest req : allRequests(adapter)) {
+      if (req.body() instanceof UpdateTableRequest) {
+        for (MetadataUpdate update : ((UpdateTableRequest) req.body()).updates()) {
+          if (update instanceof MetadataUpdate.SetProperties) {
+            String location =
+                ((MetadataUpdate.SetProperties) update).updated().get("REST_METADATA_LOCATION");
+            if (location != null) {
+              metadataLocations.add(location);
+            }
+          }
+        }
+      }
+    }
+
+    assertThat(metadataLocations)
+        .as("pointer write should set REST_METADATA_LOCATION")
+        .isNotEmpty();
+    assertThat(metadataLocations)
+        .allSatisfy(
+            location -> {
+              String fileName = location.substring(location.lastIndexOf('/') + 1);
+              assertThat(fileName).matches("\\d+-.+\\.metadata\\.json").doesNotStartWith("v");
+            });
   }
 
   @ParameterizedTest
