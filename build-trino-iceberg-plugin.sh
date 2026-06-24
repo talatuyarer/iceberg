@@ -49,6 +49,7 @@ ICEBERG_MODULES=(
   ":iceberg-common"
   ":iceberg-core"
   ":iceberg-parquet"
+  ":iceberg-orc"
   ":iceberg-aws"
   ":iceberg-azure"
   ":iceberg-gcp"
@@ -128,15 +129,19 @@ fi
 # ----------------------------------------------------------------------------
 # Step 4: Clone/checkout Trino at the target tag
 # ----------------------------------------------------------------------------
-if [[ -d "$TRINO_DIR/.git" ]]; then
-  log "Updating existing Trino checkout at $TRINO_DIR ..."
-  git -C "$TRINO_DIR" fetch --depth 1 origin "refs/tags/$TRINO_VERSION:refs/tags/$TRINO_VERSION" 2>/dev/null \
-    || git -C "$TRINO_DIR" fetch origin "$TRINO_VERSION"
-  git -C "$TRINO_DIR" checkout -f "$TRINO_VERSION"
+if [[ -z "${SKIP_TRINO_CHECKOUT:-}" ]]; then
+  if [[ -d "$TRINO_DIR/.git" ]]; then
+    log "Updating existing Trino checkout at $TRINO_DIR ..."
+    git -C "$TRINO_DIR" fetch --depth 1 origin "refs/tags/$TRINO_VERSION:refs/tags/$TRINO_VERSION" 2>/dev/null \
+      || git -C "$TRINO_DIR" fetch origin "$TRINO_VERSION"
+    git -C "$TRINO_DIR" checkout -f "$TRINO_VERSION"
+  else
+    log "Cloning Trino $TRINO_VERSION into $TRINO_DIR ..."
+    mkdir -p "$(dirname "$TRINO_DIR")"
+    git clone --depth 1 --branch "$TRINO_VERSION" https://github.com/trinodb/trino.git "$TRINO_DIR"
+  fi
 else
-  log "Cloning Trino $TRINO_VERSION into $TRINO_DIR ..."
-  mkdir -p "$(dirname "$TRINO_DIR")"
-  git clone --depth 1 --branch "$TRINO_VERSION" https://github.com/trinodb/trino.git "$TRINO_DIR"
+  log "SKIP_TRINO_CHECKOUT set; skipping checkout for Trino version $TRINO_VERSION"
 fi
 
 # Warn if Trino's pinned Iceberg major.minor differs from our patched base.
@@ -157,7 +162,7 @@ fi
 # ----------------------------------------------------------------------------
 log "Building trino-iceberg plugin (this can take a while) ..."
 ( cd "$TRINO_DIR" && JAVA_HOME="$TRINO_JAVA_HOME" ./mvnw -B install \
-    -pl plugin/trino-iceberg -am -Dmaven.test.skip=true \
+    -pl plugin/trino-iceberg -am -DskipTests \
     -Dair.check.skip-all=true \
     -Dair.compiler.fail-warnings=false \
     -Dmaven.source.skip=true -Dmaven.javadoc.skip=true \
@@ -180,8 +185,8 @@ if [[ -n "$PLUGIN_ZIP" ]]; then
   log "Exploded dir:   ${PLUGIN_ZIP%.zip}/"
   echo
   echo "Install into a Trino server:"
-  echo "  unzip -q \"$PLUGIN_ZIP\" -d /tmp/trino-iceberg-plugin"
-  echo "  mv /tmp/trino-iceberg-plugin/trino-iceberg-* <TRINO_SERVER>/plugin/iceberg"
+  echo "  rm -rf <TRINO_SERVER>/plugin/iceberg"
+  echo "  unzip -q -j \"$PLUGIN_ZIP\" -d <TRINO_SERVER>/plugin/iceberg"
 else
   warn "Build finished but no plugin zip was found under plugin/trino-iceberg/target/"
 fi

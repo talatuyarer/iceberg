@@ -154,23 +154,16 @@ class RESTTableOperations implements TableOperations {
     }
 
     Map<String, String> requestHeaders = this.headers.get();
+    Map<String, String> commitHeaders = requestHeaders;
 
     // If the client write path is enabled via the capability header
-    if (requestHeaders.containsKey("X-Iceberg-Accept-Metadata-Pointer")) {
-      TableMetadata newMetadata;
-      if (updateType == UpdateType.CREATE) {
-        // metadata is already the fully-built new table metadata. Rebuilding it via
-        // newTableMetadata + re-applying the create changes breaks SetCurrentSchema's
-        // "last added schema" tracking, so use it directly.
-        newMetadata = metadata;
-      } else {
-        TableMetadata startBase = updateType == UpdateType.REPLACE ? replaceBase : base;
-        TableMetadata.Builder newMetadataBuilder = TableMetadata.buildFrom(startBase);
-        for (MetadataUpdate update : updates) {
-          update.applyTo(newMetadataBuilder);
-        }
-        newMetadata = newMetadataBuilder.build();
+    if (requestHeaders.containsKey("X-Iceberg-Accept-Metadata-Pointer") && updateType != UpdateType.CREATE) {
+      TableMetadata startBase = updateType == UpdateType.REPLACE ? replaceBase : base;
+      TableMetadata.Builder newMetadataBuilder = TableMetadata.buildFrom(startBase);
+      for (MetadataUpdate update : updates) {
+        update.applyTo(newMetadataBuilder);
       }
+      TableMetadata newMetadata = newMetadataBuilder.build();
 
       int newVersion =
           newMetadata.lastSequenceNumber() == 0 ? 0 : (int) newMetadata.lastSequenceNumber() + 1;
@@ -179,7 +172,7 @@ class RESTTableOperations implements TableOperations {
               newMetadata.property(
                   TableProperties.METADATA_COMPRESSION,
                   TableProperties.METADATA_COMPRESSION_DEFAULT));
-      // Derive the location from newMetadata (not current(), which is null for CREATE).
+      // Derive the location from newMetadata.
       String newLocation =
           metadataFileLocation(
               newMetadata,
@@ -191,11 +184,8 @@ class RESTTableOperations implements TableOperations {
 
       java.util.Map<String, String> props = new java.util.HashMap<>();
       props.put("REST_METADATA_LOCATION", newLocation);
-      if (updateType != UpdateType.CREATE) {
-        TableMetadata startBase = updateType == UpdateType.REPLACE ? replaceBase : base;
-        if (startBase != null && startBase.metadataFileLocation() != null) {
-          props.put("PREV_REST_METADATA_LOCATION", startBase.metadataFileLocation());
-        }
+      if (startBase != null && startBase.metadataFileLocation() != null) {
+        props.put("PREV_REST_METADATA_LOCATION", startBase.metadataFileLocation());
       }
       if (newMetadata.currentSnapshot() != null) {
         props.put(
@@ -204,6 +194,13 @@ class RESTTableOperations implements TableOperations {
       }
 
       updates = ImmutableList.of(new MetadataUpdate.SetProperties(props));
+    } else {
+      // Catalog-side write path (fallback)
+      // If X-Iceberg-Accept-Metadata-Pointer is present, remove it for CREATE to avoid BigLake rejecting it
+      if (requestHeaders.containsKey("X-Iceberg-Accept-Metadata-Pointer")) {
+        commitHeaders = new java.util.HashMap<>(requestHeaders);
+        commitHeaders.remove("X-Iceberg-Accept-Metadata-Pointer");
+      }
     }
 
     UpdateTableRequest request = new UpdateTableRequest(requirements, updates);
@@ -212,7 +209,7 @@ class RESTTableOperations implements TableOperations {
     // UnknownCommitStateException
     // TODO: ensure that the HTTP client lib passes HTTP client errors to the error handler
     LoadTableResponse response =
-        client.post(path, request, LoadTableResponse.class, headers, errorHandler);
+        client.post(path, request, LoadTableResponse.class, commitHeaders, errorHandler);
 
     // all future commits should be simple commits
     this.updateType = UpdateType.SIMPLE;

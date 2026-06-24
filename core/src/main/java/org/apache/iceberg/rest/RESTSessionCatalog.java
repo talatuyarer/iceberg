@@ -454,8 +454,9 @@ public class RESTSessionCatalog extends BaseViewSessionCatalog
               .setPreviousFileLocation(null)
               .setSnapshotsSupplier(
                   () ->
-                      loadInternal(context, finalIdentifier, SnapshotMode.ALL)
-                          .tableMetadata()
+                      resolveMetadata(
+                              tableIO,
+                              loadInternal(context, finalIdentifier, SnapshotMode.ALL))
                           .snapshots())
               .discardChanges()
               .build();
