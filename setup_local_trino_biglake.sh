@@ -80,19 +80,58 @@ fi
 export ICEBERG_JAVA_HOME
 export TRINO_JAVA_HOME
 
-# --- Step 2: Download Trino Server Tarball ---
+# --- Step 2: Download or Build Trino Server Tarball ---
 if [[ -d "$TRINO_SERVER_DIR" ]]; then
   log "Trino server directory already exists at: ${TRINO_SERVER_DIR}"
 else
   mkdir -p "$DOWNLOADS_DIR"
   if [[ ! -f "$TRINO_TARBALL" ]]; then
     log "Downloading Trino server ${TRINO_VERSION} tarball..."
-    curl -fsSL -o "$TRINO_TARBALL" \
-      "https://repo1.maven.org/maven2/io/trino/trino-server/${TRINO_VERSION}/trino-server-${TRINO_VERSION}.tar.gz"
+    if ! curl -fsSL -o "$TRINO_TARBALL" \
+      "https://repo1.maven.org/maven2/io/trino/trino-server/${TRINO_VERSION}/trino-server-${TRINO_VERSION}.tar.gz"; then
+      warn "Trino server version ${TRINO_VERSION} was not found on Maven Central. Attempting to build from source..."
+
+      # Clone/checkout Trino if not done already
+      TRINO_SRC_DIR="${PARENT_DIR}/trino"
+      if [[ ! -d "$TRINO_SRC_DIR/.git" ]]; then
+        log "Cloning Trino ${TRINO_VERSION} into ${TRINO_SRC_DIR}..."
+        mkdir -p "$(dirname "$TRINO_SRC_DIR")"
+        git clone --depth 1 --branch "$TRINO_VERSION" https://github.com/trinodb/trino.git "$TRINO_SRC_DIR" \
+          || git clone https://github.com/trinodb/trino.git "$TRINO_SRC_DIR"
+        git -C "$TRINO_SRC_DIR" checkout "$TRINO_VERSION"
+      fi
+
+      log "Building Trino server from source (this can take a while)..."
+      # Find if core/trino-server or server/trino-server exists
+      TRINO_SRV_MODULE="core/trino-server"
+      if [[ ! -d "${TRINO_SRC_DIR}/${TRINO_SRV_MODULE}" ]]; then
+        TRINO_SRV_MODULE="server/trino-server"
+      fi
+      [[ -d "${TRINO_SRC_DIR}/${TRINO_SRV_MODULE}" ]] || die "Could not find Trino server module directory inside source."
+
+      ( cd "$TRINO_SRC_DIR" && JAVA_HOME="$TRINO_JAVA_HOME" ./mvnw install -pl "${TRINO_SRV_MODULE}" -am -DskipTests \
+          -Dair.check.skip-all=true \
+          -Dair.compiler.fail-warnings=false \
+          -Dmaven.source.skip=true -Dmaven.javadoc.skip=true )
+
+      # Find the generated tar.gz
+      BUILT_TARBALL="$(find "${TRINO_SRC_DIR}/${TRINO_SRV_MODULE}/target" -name "trino-server-*.tar.gz" | head -1 || true)"
+      [[ -n "$BUILT_TARBALL" && -f "$BUILT_TARBALL" ]] || die "Failed to build Trino server from source."
+
+      cp "$BUILT_TARBALL" "$TRINO_TARBALL"
+      log "Trino server built and saved to ${TRINO_TARBALL}"
+    fi
   fi
-  
+
   log "Extracting Trino server to ${PARENT_DIR}..."
   tar -xzf "$TRINO_TARBALL" -C "$PARENT_DIR"
+
+  # If the extracted directory name differs (e.g. has SNAPSHOT suffix), rename it to match TRINO_SERVER_DIR
+  EXTRACTED_DIR="$(find "$PARENT_DIR" -maxdepth 1 -type d -name "trino-server-*" ! -name "trino-server-${TRINO_VERSION}" | head -1 || true)"
+  if [[ -n "$EXTRACTED_DIR" ]]; then
+    log "Renaming ${EXTRACTED_DIR} to ${TRINO_SERVER_DIR}"
+    mv "$EXTRACTED_DIR" "$TRINO_SERVER_DIR"
+  fi
 fi
 
 # --- Step 3: Compile and Publish Patched Iceberg & Trino Plugin ---
