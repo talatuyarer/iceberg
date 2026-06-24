@@ -104,12 +104,14 @@ else
       log "Building Trino server from source (this can take a while)..."
       # Find if core/trino-server or server/trino-server exists
       TRINO_SRV_MODULE="core/trino-server"
+      TRINO_CORE_MODULE="core/trino-server-core"
       if [[ ! -d "${TRINO_SRC_DIR}/${TRINO_SRV_MODULE}" ]]; then
         TRINO_SRV_MODULE="server/trino-server"
+        TRINO_CORE_MODULE="server/trino-server-core"
       fi
       [[ -d "${TRINO_SRC_DIR}/${TRINO_SRV_MODULE}" ]] || die "Could not find Trino server module directory inside source."
 
-      ( cd "$TRINO_SRC_DIR" && JAVA_HOME="$TRINO_JAVA_HOME" ./mvnw install -pl "${TRINO_SRV_MODULE}" -am -DskipTests \
+      ( cd "$TRINO_SRC_DIR" && JAVA_HOME="$TRINO_JAVA_HOME" ./mvnw install -DskipTests \
           -Dair.check.skip-all=true \
           -Dair.compiler.fail-warnings=false \
           -Dmaven.source.skip=true -Dmaven.javadoc.skip=true )
