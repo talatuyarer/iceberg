@@ -111,10 +111,38 @@ else
       fi
       [[ -d "${TRINO_SRC_DIR}/${TRINO_SRV_MODULE}" ]] || die "Could not find Trino server module directory inside source."
 
-      ( cd "$TRINO_SRC_DIR" && JAVA_HOME="$TRINO_JAVA_HOME" ./mvnw install -DskipTests \
+      # Resolve the hdfs plugin directory (could be lib/trino-hdfs or plugin/trino-hdfs in different versions)
+      TRINO_HDFS_MODULE="lib/trino-hdfs"
+      if [[ ! -d "${TRINO_SRC_DIR}/${TRINO_HDFS_MODULE}" ]]; then
+        TRINO_HDFS_MODULE="plugin/trino-hdfs"
+      fi
+
+      PROVISIO_XML="${TRINO_SRC_DIR}/${TRINO_SRV_MODULE}/src/main/provisio/trino.xml"
+      log "Stripping unused plugins from provisio assembly config: ${PROVISIO_XML}"
+
+      python3 -c "
+import xml.etree.ElementTree as ET
+import sys
+file_path = sys.argv[1]
+tree = ET.parse(file_path)
+root = tree.getroot()
+for artifact_set in list(root.findall('artifactSet')):
+    to_attr = artifact_set.get('to', '')
+    if to_attr not in ['', 'plugin/iceberg']:
+        root.remove(artifact_set)
+tree.write(file_path, encoding='utf-8', xml_declaration=True)
+" "$PROVISIO_XML"
+
+      log "Building minimal Trino server and required plugins from source..."
+      ( cd "$TRINO_SRC_DIR" && JAVA_HOME="$TRINO_JAVA_HOME" ./mvnw install \
+          -pl "${TRINO_SRV_MODULE},${TRINO_CORE_MODULE},plugin/trino-iceberg,${TRINO_HDFS_MODULE}" -am -DskipTests \
           -Dair.check.skip-all=true \
           -Dair.compiler.fail-warnings=false \
           -Dmaven.source.skip=true -Dmaven.javadoc.skip=true )
+
+      # Revert the provisio XML changes to clean up git state in the source directory
+      log "Restoring original provisio assembly config..."
+      git -C "$TRINO_SRC_DIR" checkout -- "${TRINO_SRV_MODULE}/src/main/provisio/trino.xml"
 
       # Find the generated tar.gz
       BUILT_TARBALL="$(find "${TRINO_SRC_DIR}/${TRINO_SRV_MODULE}/target" -name "trino-server-*.tar.gz" | head -1 || true)"
@@ -169,6 +197,7 @@ EOF
 # 5b. etc/jvm.config
 cat <<EOF > "${TRINO_SERVER_DIR}/etc/jvm.config"
 -server
+-XX:+UnlockExperimentalVMOptions
 -Xmx16G
 -XX:InitialRAMPercentage=60
 -XX:MaxRAMPercentage=60
@@ -198,7 +227,6 @@ node-scheduler.include-coordinator=true
 http-server.http.port=8080
 query.max-memory=4GB
 query.max-memory-per-node=1GB
-query.max-total-memory-per-node=2GB
 discovery.uri=http://localhost:8080
 EOF
 
@@ -235,8 +263,14 @@ echo "To start your local Trino server, run:"
 echo
 echo -e "  \033[1;32mJAVA_HOME=\"${TRINO_JAVA_HOME}\" ${TRINO_SERVER_DIR}/bin/launcher run\033[0m"
 echo
+# Resolve available CLI version (fallback to 476 if target version is not on Central)
+CLI_VERSION="${TRINO_VERSION}"
+if ! curl -fsSLI "https://repo1.maven.org/maven2/io/trino/trino-cli/${TRINO_VERSION}/trino-cli-${TRINO_VERSION}-executable.jar" >/dev/null 2>&1; then
+  CLI_VERSION="476"
+fi
+
 echo "To connect to the server once it is running, download the Trino CLI:"
-echo "  curl -s -o trino-cli https://repo1.maven.org/maven2/io/trino/trino-cli/${TRINO_VERSION}/trino-cli-${TRINO_VERSION}-executable.jar"
+echo "  curl -s -o trino-cli https://repo1.maven.org/maven2/io/trino/trino-cli/${CLI_VERSION}/trino-cli-${CLI_VERSION}-executable.jar"
 echo "  chmod +x trino-cli"
 echo "  ./trino-cli --server http://localhost:8080"
 echo
