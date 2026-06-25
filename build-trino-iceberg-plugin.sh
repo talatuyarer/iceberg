@@ -166,6 +166,7 @@ log "Building trino-iceberg plugin (this can take a while) ..."
     -Dair.check.skip-all=true \
     -Dair.compiler.fail-warnings=false \
     -Dmaven.source.skip=true -Dmaven.javadoc.skip=true \
+    -Dproject.build.targetJdk="${TRINO_TARGET_JDK:-25}" \
     -Ddep.iceberg.version="$ICEBERG_PUBLISH_VERSION" ) \
   || die "Trino build failed. If the JDK was rejected, install the JDK Trino $TRINO_VERSION requires and set TRINO_JAVA_HOME."
 

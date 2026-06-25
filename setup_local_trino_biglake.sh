@@ -37,9 +37,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARENT_DIR="$(dirname "${SCRIPT_DIR}")"
 
 # --- Argument Parsing & Validation ---
+PURGE=false
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --purge|-p)
+      PURGE=true
+      shift
+      ;;
+    -*)
+      echo "❌ Error: Unknown option $1"
+      echo "Usage: $0 [--purge] <GCP_PROJECT_ID> <GCS_BUCKET_NAME> [TRINO_VERSION]"
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+if [[ "${#POSITIONAL_ARGS[@]}" -gt 0 ]]; then
+  set -- "${POSITIONAL_ARGS[@]}"
+else
+  set --
+fi
+
 if [[ "$#" -lt 2 ]]; then
   echo "❌ Error: Missing required arguments."
-  echo "Usage: $0 <GCP_PROJECT_ID> <GCS_BUCKET_NAME> [TRINO_VERSION]"
+  echo "Usage: $0 [--purge] <GCP_PROJECT_ID> <GCS_BUCKET_NAME> [TRINO_VERSION]"
   exit 1
 fi
 
@@ -55,8 +80,16 @@ TRINO_TARBALL="${DOWNLOADS_DIR}/trino-server-${TRINO_VERSION}.tar.gz"
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
+if [[ "$PURGE" = true ]]; then
+  log "Purging existing Trino server directory and downloaded tarball..."
+  rm -rf "$TRINO_SERVER_DIR"
+  rm -f "$TRINO_TARBALL"
+fi
 
 log "Setting up local Trino ${TRINO_VERSION} for BigLake catalog '${BUCKET_NAME}'..."
+# --- Step 0: Validate Prerequisites ---
+command -v docker >/dev/null 2>&1 || die "docker is required but not installed. Please install Docker."
+command -v npm >/dev/null 2>&1 || die "npm is required but not installed. Please install Node/npm."
 
 # --- Step 1: Validate JDKs ---
 # Trino 481 requires JDK 24 or 25; Iceberg requires JDK 17 (or 11/21, NOT 25)
