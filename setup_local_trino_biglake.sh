@@ -286,6 +286,12 @@ gcs.auth-type=APPLICATION_DEFAULT
 ${ADC_CONFIG_LINE}
 EOF
 
+# 5e. etc/log.properties
+cat <<EOF > "${TRINO_SERVER_DIR}/etc/log.properties"
+org.apache.iceberg=INFO
+io.trino=INFO
+EOF
+
 log "Configurations generated successfully!"
 
 # --- Step 6: Verify and Instruct ---
