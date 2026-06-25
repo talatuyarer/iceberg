@@ -261,6 +261,7 @@ http-server.http.port=8080
 query.max-memory=4GB
 query.max-memory-per-node=1GB
 discovery.uri=http://localhost:8080
+log.enable-console=true
 EOF
 
 # 5d. etc/catalog/iceberg.properties

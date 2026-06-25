@@ -44,8 +44,11 @@ import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.ErrorResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.util.LocationUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 class RESTTableOperations implements TableOperations {
+  private static final Logger LOG = LoggerFactory.getLogger(RESTTableOperations.class);
   private static final String METADATA_FOLDER_NAME = "metadata";
 
   enum UpdateType {
@@ -96,7 +99,12 @@ class RESTTableOperations implements TableOperations {
       this.current = current;
     }
     this.endpoints = endpoints;
+
+    if (current != null) {
+      LOG.info("Initialized table {} operations with metadata file path: {}", path, current.metadataFileLocation());
+    }
   }
+
 
   @Override
   public TableMetadata current() {
@@ -237,6 +245,10 @@ class RESTTableOperations implements TableOperations {
     if (current == null
         || !Objects.equals(current.metadataFileLocation(), response.metadataLocation())) {
       this.current = newMetadata;
+    }
+
+    if (current != null) {
+      LOG.info("Loaded table {} metadata file path: {}", path, current.metadataFileLocation());
     }
 
     return current;
