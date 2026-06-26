@@ -173,8 +173,8 @@ class RESTTableOperations implements TableOperations {
       }
       TableMetadata newMetadata = newMetadataBuilder.build();
 
-      int newVersion =
-          newMetadata.lastSequenceNumber() == 0 ? 0 : (int) newMetadata.lastSequenceNumber() + 1;
+      int currentVersion = parseVersion(startBase != null ? startBase.metadataFileLocation() : null);
+      int newVersion = currentVersion >= 0 ? currentVersion + 1 : 0;
       String fileExtension =
           TableMetadataParser.getFileExtension(
               newMetadata.property(
@@ -261,6 +261,23 @@ class RESTTableOperations implements TableOperations {
       return String.format("%s/%s", LocationUtil.stripTrailingSlash(metadataLocation), filename);
     } else {
       return String.format("%s/%s/%s", metadata.location(), METADATA_FOLDER_NAME, filename);
+    }
+  }
+
+  private static int parseVersion(String metadataLocation) {
+    if (metadataLocation == null) {
+      return -1;
+    }
+    int versionStart = metadataLocation.lastIndexOf('/') + 1;
+    int versionEnd = metadataLocation.indexOf('-', versionStart);
+    if (versionEnd < 0) {
+      return -1;
+    }
+    try {
+      return Integer.parseInt(metadataLocation.substring(versionStart, versionEnd));
+    } catch (NumberFormatException e) {
+      LOG.warn("Unable to parse version from metadata location: {}", metadataLocation, e);
+      return -1;
     }
   }
 
