@@ -19,14 +19,17 @@
 package org.apache.iceberg.rest;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.apache.iceberg.LocationProviders;
 import org.apache.iceberg.MetadataUpdate;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.UpdateRequirement;
@@ -41,8 +44,11 @@ import org.apache.iceberg.rest.requests.UpdateTableRequest;
 import org.apache.iceberg.rest.responses.ErrorResponse;
 import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.iceberg.util.LocationUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 class RESTTableOperations implements TableOperations {
+  private static final Logger LOG = LoggerFactory.getLogger(RESTTableOperations.class);
   private static final String METADATA_FOLDER_NAME = "metadata";
 
   enum UpdateType {
@@ -93,7 +99,12 @@ class RESTTableOperations implements TableOperations {
       this.current = current;
     }
     this.endpoints = endpoints;
+
+    if (current != null) {
+      LOG.info("Initialized table {} operations with metadata file path: {}", path, current.metadataFileLocation());
+    }
   }
+
 
   @Override
   public TableMetadata current() {
@@ -150,13 +161,63 @@ class RESTTableOperations implements TableOperations {
             String.format("Update type %s is not supported", updateType));
     }
 
+    Map<String, String> requestHeaders = this.headers.get();
+    Map<String, String> commitHeaders = requestHeaders;
+
+    // If the client write path is enabled via the capability header
+    if (requestHeaders.containsKey("X-Iceberg-Accept-Metadata-Pointer") && updateType != UpdateType.CREATE) {
+      TableMetadata startBase = updateType == UpdateType.REPLACE ? replaceBase : base;
+      TableMetadata.Builder newMetadataBuilder = TableMetadata.buildFrom(startBase);
+      for (MetadataUpdate update : updates) {
+        update.applyTo(newMetadataBuilder);
+      }
+      TableMetadata newMetadata = newMetadataBuilder.build();
+
+      int currentVersion = parseVersion(startBase != null ? startBase.metadataFileLocation() : null);
+      int newVersion = currentVersion >= 0 ? currentVersion + 1 : 0;
+      String fileExtension =
+          TableMetadataParser.getFileExtension(
+              newMetadata.property(
+                  TableProperties.METADATA_COMPRESSION,
+                  TableProperties.METADATA_COMPRESSION_DEFAULT));
+      // Derive the location from newMetadata.
+      String newLocation =
+          metadataFileLocation(
+              newMetadata,
+              String.format(
+                  Locale.ROOT, "%05d-%s%s", newVersion, UUID.randomUUID(), fileExtension));
+
+      org.apache.iceberg.io.OutputFile outputFile = io().newOutputFile(newLocation);
+      TableMetadataParser.overwrite(newMetadata, outputFile);
+
+      java.util.Map<String, String> props = new java.util.HashMap<>();
+      props.put("REST_METADATA_LOCATION", newLocation);
+      if (startBase != null && startBase.metadataFileLocation() != null) {
+        props.put("PREV_REST_METADATA_LOCATION", startBase.metadataFileLocation());
+      }
+      if (newMetadata.currentSnapshot() != null) {
+        props.put(
+            "REST_METADATA_SNAPSHOT_ID",
+            String.valueOf(newMetadata.currentSnapshot().snapshotId()));
+      }
+
+      updates = ImmutableList.of(new MetadataUpdate.SetProperties(props));
+    } else {
+      // Catalog-side write path (fallback)
+      // If X-Iceberg-Accept-Metadata-Pointer is present, remove it for CREATE to avoid BigLake rejecting it
+      if (requestHeaders.containsKey("X-Iceberg-Accept-Metadata-Pointer")) {
+        commitHeaders = new java.util.HashMap<>(requestHeaders);
+        commitHeaders.remove("X-Iceberg-Accept-Metadata-Pointer");
+      }
+    }
+
     UpdateTableRequest request = new UpdateTableRequest(requirements, updates);
 
     // the error handler will throw necessary exceptions like CommitFailedException and
     // UnknownCommitStateException
     // TODO: ensure that the HTTP client lib passes HTTP client errors to the error handler
     LoadTableResponse response =
-        client.post(path, request, LoadTableResponse.class, headers, errorHandler);
+        client.post(path, request, LoadTableResponse.class, commitHeaders, errorHandler);
 
     // all future commits should be simple commits
     this.updateType = UpdateType.SIMPLE;
@@ -170,12 +231,24 @@ class RESTTableOperations implements TableOperations {
   }
 
   private TableMetadata updateCurrentMetadata(LoadTableResponse response) {
+    TableMetadata newMetadata = response.tableMetadata();
+    if (newMetadata == null) {
+      Preconditions.checkArgument(
+          response.metadataLocation() != null,
+          "Invalid response: must have metadata or metadata-location");
+      newMetadata = TableMetadataParser.read(io(), response.metadataLocation());
+    }
+
     // LoadTableResponse is used to deserialize the response, but config is not allowed by the REST
     // spec so it can be
     // safely ignored. there is no requirement to update config on refresh or commit.
     if (current == null
         || !Objects.equals(current.metadataFileLocation(), response.metadataLocation())) {
-      this.current = response.tableMetadata();
+      this.current = newMetadata;
+    }
+
+    if (current != null) {
+      LOG.info("Loaded table {} metadata file path: {}", path, current.metadataFileLocation());
     }
 
     return current;
@@ -188,6 +261,23 @@ class RESTTableOperations implements TableOperations {
       return String.format("%s/%s", LocationUtil.stripTrailingSlash(metadataLocation), filename);
     } else {
       return String.format("%s/%s/%s", metadata.location(), METADATA_FOLDER_NAME, filename);
+    }
+  }
+
+  private static int parseVersion(String metadataLocation) {
+    if (metadataLocation == null) {
+      return -1;
+    }
+    int versionStart = metadataLocation.lastIndexOf('/') + 1;
+    int versionEnd = metadataLocation.indexOf('-', versionStart);
+    if (versionEnd < 0) {
+      return -1;
+    }
+    try {
+      return Integer.parseInt(metadataLocation.substring(versionStart, versionEnd));
+    } catch (NumberFormatException e) {
+      LOG.warn("Unable to parse version from metadata location: {}", metadataLocation, e);
+      return -1;
     }
   }
 

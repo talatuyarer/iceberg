@@ -35,12 +35,14 @@ import java.util.stream.Collectors;
 import org.apache.iceberg.BaseMetadataTable;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.BaseTransaction;
+import org.apache.iceberg.MetadataUpdate;
 import org.apache.iceberg.MetadataUpdate.UpgradeFormatVersion;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.TableOperations;
 import org.apache.iceberg.Transaction;
 import org.apache.iceberg.UpdateRequirement;
@@ -392,17 +394,36 @@ public class CatalogHandlers {
   private static TableMetadata create(TableOperations ops, UpdateTableRequest request) {
     // the only valid requirement is that the table will be created
     request.requirements().forEach(requirement -> requirement.validate(ops.current()));
-    Optional<Integer> formatVersion =
-        request.updates().stream()
-            .filter(update -> update instanceof UpgradeFormatVersion)
-            .map(update -> ((UpgradeFormatVersion) update).formatVersion())
-            .findFirst();
 
-    TableMetadata.Builder builder =
-        formatVersion.map(TableMetadata::buildFromEmpty).orElseGet(TableMetadata::buildFromEmpty);
-    request.updates().forEach(update -> update.applyTo(builder));
+    String newLocation = null;
+    for (MetadataUpdate update : request.updates()) {
+      if (update instanceof MetadataUpdate.SetProperties
+          && ((MetadataUpdate.SetProperties) update).updated().containsKey("REST_METADATA_LOCATION")) {
+        newLocation = ((MetadataUpdate.SetProperties) update).updated().get("REST_METADATA_LOCATION");
+        break;
+      }
+    }
+
+    TableMetadata newMetadata;
+    if (newLocation != null) {
+      // The client wrote the new table metadata file itself and sent only a pointer; adopt it
+      // (it carries the schema, spec, etc.).
+      newMetadata = TableMetadataParser.read(ops.io(), newLocation);
+    } else {
+      Optional<Integer> formatVersion =
+          request.updates().stream()
+              .filter(update -> update instanceof UpgradeFormatVersion)
+              .map(update -> ((UpgradeFormatVersion) update).formatVersion())
+              .findFirst();
+
+      TableMetadata.Builder builder =
+          formatVersion.map(TableMetadata::buildFromEmpty).orElseGet(TableMetadata::buildFromEmpty);
+      request.updates().forEach(update -> update.applyTo(builder));
+      newMetadata = builder.build();
+    }
+
     // create transactions do not retry. if the table exists, retrying is not a solution
-    ops.commit(null, builder.build());
+    ops.commit(null, newMetadata);
 
     return ops.current();
   }
@@ -433,12 +454,30 @@ public class CatalogHandlers {
 
                 // apply changes
                 TableMetadata.Builder metadataBuilder = TableMetadata.buildFrom(base);
-                request.updates().forEach(update -> update.applyTo(metadataBuilder));
 
-                TableMetadata updated = metadataBuilder.build();
-                if (updated.changes().isEmpty()) {
-                  // do not commit if the metadata has not changed
-                  return;
+                String newLocation = null;
+                for (MetadataUpdate update : request.updates()) {
+                  if (update instanceof MetadataUpdate.SetProperties) {
+                    MetadataUpdate.SetProperties setProps = (MetadataUpdate.SetProperties) update;
+                    if (setProps.updated().containsKey("REST_METADATA_LOCATION")) {
+                      newLocation = setProps.updated().get("REST_METADATA_LOCATION");
+                      continue;
+                    }
+                  }
+                  update.applyTo(metadataBuilder);
+                }
+
+                TableMetadata updated;
+                if (newLocation != null) {
+                  // The client wrote the new metadata file itself and sent only a pointer; adopt it
+                  // (it carries the real changes, e.g. the new snapshot).
+                  updated = TableMetadataParser.read(taskOps.io(), newLocation);
+                } else {
+                  updated = metadataBuilder.build();
+                  if (updated.changes().isEmpty()) {
+                    // do not commit if the metadata has not changed
+                    return;
+                  }
                 }
 
                 // commit

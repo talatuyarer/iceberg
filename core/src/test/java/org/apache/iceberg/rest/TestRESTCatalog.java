@@ -988,6 +988,102 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
             any());
   }
 
+  @Test
+  public void testClientDrivenMetadataWrite() throws Exception {
+    RESTCatalogAdapter adapter = Mockito.spy(new RESTCatalogAdapter(backendCatalog));
+
+    RESTCatalog catalog =
+        new RESTCatalog(SessionCatalog.SessionContext.createEmpty(), (config) -> adapter);
+    catalog.initialize(
+        "test",
+        ImmutableMap.of(
+            CatalogProperties.URI,
+            "ignored",
+            CatalogProperties.FILE_IO_IMPL,
+            "org.apache.iceberg.inmemory.InMemoryFileIO",
+            "rest.metadata-by-reference.enabled",
+            "true"));
+
+    if (requiresNamespaceCreate()) {
+      catalog.createNamespace(TABLE.namespace());
+    }
+
+    // 1. Create a table. The adapter should return a LoadTableResponse but strip the metadata
+    // Payload.
+    // RESTTableOperations should have written the initial metadata to FileIO.
+    Table table = catalog.createTable(TABLE, SCHEMA);
+
+    assertThat(table.schema().columns()).hasSize(SCHEMA.columns().size());
+
+    // 2. Perform a mutation.
+    table
+        .newFastAppend()
+        .appendFile(
+            DataFiles.builder(PartitionSpec.unpartitioned())
+                .withPath("/path/to/data-a.parquet")
+                .withFileSizeInBytes(10)
+                .withRecordCount(2)
+                .build())
+        .commit();
+
+    // 3. Verify the pointer write happened
+    // The UpdateTableRequest sent to the server should only contain SetProperties with
+    // REST_METADATA_LOCATION
+    verify(adapter, atLeastOnce())
+        .execute(
+            org.mockito.ArgumentMatchers.<org.apache.iceberg.rest.HTTPRequest>argThat(
+                req -> {
+                  if (req.method() == org.apache.iceberg.rest.HTTPRequest.HTTPMethod.POST
+                      && req.path().contains("/tables/")) {
+                    Object body = req.body();
+                    if (body instanceof org.apache.iceberg.rest.requests.UpdateTableRequest) {
+                      org.apache.iceberg.rest.requests.UpdateTableRequest updateReq =
+                          (org.apache.iceberg.rest.requests.UpdateTableRequest) body;
+                      return updateReq.updates().stream()
+                          .anyMatch(
+                              u ->
+                                  u instanceof org.apache.iceberg.MetadataUpdate.SetProperties
+                                      && ((org.apache.iceberg.MetadataUpdate.SetProperties) u)
+                                          .updated()
+                                          .containsKey("REST_METADATA_LOCATION"));
+                    }
+                  }
+                  return false;
+                }),
+            eq(LoadTableResponse.class),
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any());
+
+    // 4. The generated metadata file name must use the IRC-compatible digit prefix
+    // (e.g. 00000-<uuid>.metadata.json), not a "v"-prefixed name. The regular server-driven update
+    // path parses the version from that prefix, so a "v3-..." name would break a future fallback.
+    List<String> metadataLocations = new java.util.ArrayList<>();
+    for (HTTPRequest req : allRequests(adapter)) {
+      if (req.body() instanceof UpdateTableRequest) {
+        for (MetadataUpdate update : ((UpdateTableRequest) req.body()).updates()) {
+          if (update instanceof MetadataUpdate.SetProperties) {
+            String location =
+                ((MetadataUpdate.SetProperties) update).updated().get("REST_METADATA_LOCATION");
+            if (location != null) {
+              metadataLocations.add(location);
+            }
+          }
+        }
+      }
+    }
+
+    assertThat(metadataLocations)
+        .as("pointer write should set REST_METADATA_LOCATION")
+        .isNotEmpty();
+    assertThat(metadataLocations)
+        .allSatisfy(
+            location -> {
+              String fileName = location.substring(location.lastIndexOf('/') + 1);
+              assertThat(fileName).matches("\\d+-.+\\.metadata\\.json").doesNotStartWith("v");
+            });
+  }
+
   @ParameterizedTest
   @ValueSource(strings = {"1", "2"})
   public void testTableSnapshotLoadingWithDivergedBranches(String formatVersion) {
@@ -2449,7 +2545,7 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     Table table = catalog.loadTable(TABLE);
     Mockito.doThrow(new NotAuthorizedException("not authorized"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST), any(), any(), any());
+        .execute(reqMatcher(HTTPMethod.POST), any(), any(), any(), any());
     assertThatThrownBy(() -> catalog.loadTable(TABLE).newFastAppend().appendFile(file).commit())
         .isInstanceOf(NotAuthorizedException.class)
         .hasMessage("not authorized");
@@ -2486,7 +2582,7 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
 
     Mockito.doThrow(new ServiceFailureException("some service failure"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST), any(), any(), any());
+        .execute(reqMatcher(HTTPMethod.POST), any(), any(), any(), any());
     assertThatThrownBy(() -> catalog.loadTable(TABLE).newFastAppend().appendFile(FILE_A).commit())
         .isInstanceOf(ServiceFailureException.class)
         .hasMessage("some service failure");
@@ -2520,7 +2616,12 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     TableIdentifier newTable = TableIdentifier.of(TABLE.namespace(), "some_table");
     Mockito.doThrow(new NotAuthorizedException("not authorized"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(newTable)), any(), any(), any());
+        .execute(
+            reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(newTable)),
+            any(),
+            any(),
+            any(),
+            any());
 
     Transaction createTableTransaction = catalog.newCreateTableTransaction(newTable, SCHEMA);
     createTableTransaction.newAppend().appendFile(FILE_A).commit();
@@ -2567,7 +2668,12 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     TableIdentifier newTable = TableIdentifier.of(TABLE.namespace(), "some_table");
     Mockito.doThrow(new ServiceFailureException("some service failure"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(newTable)), any(), any(), any());
+        .execute(
+            reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(newTable)),
+            any(),
+            any(),
+            any(),
+            any());
 
     Transaction createTableTransaction = catalog.newCreateTableTransaction(newTable, SCHEMA);
     createTableTransaction.newAppend().appendFile(FILE_A).commit();
@@ -2608,7 +2714,8 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     catalog.createTable(TABLE, SCHEMA);
     Mockito.doThrow(new NotAuthorizedException("not authorized"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(TABLE)), any(), any(), any());
+        .execute(
+            reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(TABLE)), any(), any(), any(), any());
 
     Transaction replaceTableTransaction = catalog.newReplaceTableTransaction(TABLE, SCHEMA, false);
     replaceTableTransaction.newAppend().appendFile(FILE_A).commit();
@@ -2651,7 +2758,8 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
     catalog.createTable(TABLE, SCHEMA);
     Mockito.doThrow(new ServiceFailureException("some service failure"))
         .when(adapter)
-        .execute(reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(TABLE)), any(), any(), any());
+        .execute(
+            reqMatcher(HTTPMethod.POST, RESOURCE_PATHS.table(TABLE)), any(), any(), any(), any());
 
     Transaction replaceTableTransaction = catalog.newReplaceTableTransaction(TABLE, SCHEMA, false);
     replaceTableTransaction.newAppend().appendFile(FILE_A).commit();
@@ -2892,9 +3000,58 @@ public class TestRESTCatalog extends CatalogTests<RESTCatalog> {
                 && Objects.equals(req.body(), body));
   }
 
+  @Test
+  public void testMetadataByReference() throws Exception {
+    RESTCatalogAdapter adapter = Mockito.spy(new RESTCatalogAdapter(backendCatalog));
+    try (RESTCatalog pointerCatalog =
+        new RESTCatalog(SessionCatalog.SessionContext.createEmpty(), (config) -> adapter)) {
+
+      pointerCatalog.initialize(
+          "prod",
+          ImmutableMap.of(
+              CatalogProperties.URI,
+              "ignored",
+              CatalogProperties.FILE_IO_IMPL,
+              "org.apache.iceberg.inmemory.InMemoryFileIO",
+              "rest.metadata-by-reference.enabled",
+              "true"));
+
+      Namespace ns2 = Namespace.of("ns2");
+      TableIdentifier tbl2 = TableIdentifier.of(ns2, "tbl2");
+
+      if (!pointerCatalog.namespaceExists(ns2)) {
+        pointerCatalog.createNamespace(ns2);
+      }
+
+      Table table = pointerCatalog.buildTable(tbl2, SCHEMA).withPartitionSpec(SPEC).create();
+
+      Schema expectedSchema =
+          new Schema(
+              Types.NestedField.required(1, "id", Types.IntegerType.get(), "unique ID 🤪"),
+              Types.NestedField.required(2, "data", Types.StringType.get()));
+
+      assertThat(table.schema().asStruct()).isEqualTo(expectedSchema.asStruct());
+
+      PartitionSpec expectedSpec =
+          PartitionSpec.builderFor(expectedSchema).bucket("id", 16).build();
+      assertThat(table.spec().fields()).isEqualTo(expectedSpec.fields());
+
+      Table loaded = pointerCatalog.loadTable(tbl2);
+      assertThat(loaded.schema().asStruct()).isEqualTo(expectedSchema.asStruct());
+
+      List<HTTPRequest> requests = allRequests(adapter);
+      boolean hasCapabilityHeader =
+          requests.stream()
+              .filter(req -> req.method() == HTTPMethod.GET && req.path().contains("tables"))
+              .anyMatch(req -> req.headers().contains("X-Iceberg-Accept-Metadata-Pointer"));
+
+      assertThat(hasCapabilityHeader).as("Client should send pointer capability header").isTrue();
+    }
+  }
+
   private static List<HTTPRequest> allRequests(RESTCatalogAdapter adapter) {
     ArgumentCaptor<HTTPRequest> captor = ArgumentCaptor.forClass(HTTPRequest.class);
-    verify(adapter, atLeastOnce()).execute(captor.capture(), any(), any(), any());
+    verify(adapter, atLeastOnce()).execute(captor.capture(), any(), any(), any(), any());
     return captor.getAllValues();
   }
 }

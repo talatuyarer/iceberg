@@ -63,7 +63,9 @@ public class LoadTableResponse implements RESTResponse {
 
   @Override
   public void validate() {
-    Preconditions.checkNotNull(metadata, "Invalid metadata: null");
+    Preconditions.checkArgument(
+        metadata != null || metadataLocation != null,
+        "Invalid response: must have metadata or metadata-location");
   }
 
   public String metadataLocation() {
@@ -71,6 +73,10 @@ public class LoadTableResponse implements RESTResponse {
   }
 
   public TableMetadata tableMetadata() {
+    if (metadata == null) {
+      return null;
+    }
+
     if (null == metadataWithLocation) {
       this.metadataWithLocation =
           TableMetadata.buildFrom(metadata).withMetadataLocation(metadataLocation).build();
@@ -109,8 +115,16 @@ public class LoadTableResponse implements RESTResponse {
     private Builder() {}
 
     public Builder withTableMetadata(TableMetadata tableMetadata) {
-      this.metadataLocation = tableMetadata.metadataFileLocation();
-      this.metadata = tableMetadata;
+      if (tableMetadata != null) {
+        this.metadataLocation = tableMetadata.metadataFileLocation();
+        this.metadata = tableMetadata;
+      }
+      return this;
+    }
+
+    public Builder withMetadataLocationOnly(String location) {
+      this.metadataLocation = location;
+      this.metadata = null;
       return this;
     }
 
@@ -135,7 +149,9 @@ public class LoadTableResponse implements RESTResponse {
     }
 
     public LoadTableResponse build() {
-      Preconditions.checkNotNull(metadata, "Invalid metadata: null");
+      Preconditions.checkArgument(
+          metadata != null || metadataLocation != null,
+          "Invalid response: must have metadata or metadata-location");
       return new LoadTableResponse(metadataLocation, metadata, config, credentials);
     }
   }

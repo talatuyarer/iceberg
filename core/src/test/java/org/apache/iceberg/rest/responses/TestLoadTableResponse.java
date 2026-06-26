@@ -99,8 +99,8 @@ public class TestLoadTableResponse extends RequestResponseTestBase<LoadTableResp
   @Test
   public void testFailures() {
     assertThatThrownBy(() -> LoadTableResponse.builder().build())
-        .isInstanceOf(NullPointerException.class)
-        .hasMessage("Invalid metadata: null");
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Invalid response: must have metadata or metadata-location");
   }
 
   @Test
