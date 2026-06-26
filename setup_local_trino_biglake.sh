@@ -112,6 +112,7 @@ fi
 # Export them for the child build script
 export ICEBERG_JAVA_HOME
 export TRINO_JAVA_HOME
+export TRINO_DIR="${PARENT_DIR}/trino"
 
 # --- Step 2: Download or Build Trino Server Tarball ---
 if [[ -d "$TRINO_SERVER_DIR" ]]; then
