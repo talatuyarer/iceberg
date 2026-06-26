@@ -161,7 +161,7 @@ fi
 # Step 5: Build the trino-iceberg plugin against the patched Iceberg
 # ----------------------------------------------------------------------------
 log "Building trino-iceberg plugin (this can take a while) ..."
-( cd "$TRINO_DIR" && JAVA_HOME="$TRINO_JAVA_HOME" ./mvnw -B install \
+( cd "$TRINO_DIR" && JAVA_HOME="$TRINO_JAVA_HOME" ./mvnw -B clean install \
     -pl plugin/trino-iceberg -am -DskipTests \
     -Dair.check.skip-all=true \
     -Dair.compiler.fail-warnings=false \
