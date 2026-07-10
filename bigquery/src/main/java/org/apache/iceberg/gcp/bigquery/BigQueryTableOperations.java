@@ -23,10 +23,12 @@ import com.google.api.services.bigquery.model.Table;
 import com.google.api.services.bigquery.model.TableReference;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.iceberg.BaseMetastoreOperations;
 import org.apache.iceberg.BaseMetastoreTableOperations;
 import org.apache.iceberg.SnapshotSummary;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.exceptions.CommitFailedException;
@@ -34,6 +36,8 @@ import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.base.Strings;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +53,13 @@ final class BigQueryTableOperations extends BaseMetastoreTableOperations {
   private final FileIO fileIO;
   private final TableReference tableReference;
 
+  /**
+   * Table loaded in doRefresh() for reuse in updateTable() to avoid a redundant API call. Each
+   * loaded table is consumed by at most one commit so that concurrent commits cannot share, and
+   * accidentally mutate or reuse, the same etag-carrying object.
+   */
+  private final AtomicReference<Table> metastoreTable = new AtomicReference<>();
+
   BigQueryTableOperations(
       BigQueryMetastoreClient client, FileIO fileIO, TableReference tableReference) {
     this.client = client;
@@ -61,9 +72,11 @@ final class BigQueryTableOperations extends BaseMetastoreTableOperations {
   public void doRefresh() {
     // Must default to null.
     String metadataLocation = null;
+    metastoreTable.set(null);
     try {
-      metadataLocation =
-          loadMetadataLocationOrThrow(client.load(tableReference).getExternalCatalogTableOptions());
+      Table loadedTable = client.load(tableReference);
+      metastoreTable.set(loadedTable);
+      metadataLocation = loadMetadataLocationOrThrow(loadedTable.getExternalCatalogTableOptions());
     } catch (NoSuchTableException e) {
       if (currentMetadataLocation() != null) {
         // Re-throws the exception because the table must exist in this case.
@@ -90,35 +103,91 @@ final class BigQueryTableOperations extends BaseMetastoreTableOperations {
         updateTable(base.metadataFileLocation(), newMetadataLocation, metadata);
       }
       commitStatus = BaseMetastoreOperations.CommitStatus.SUCCESS;
-    } catch (CommitFailedException | CommitStateUnknownException e) {
+    } catch (CommitStateUnknownException e) {
+      commitStatus = BaseMetastoreOperations.CommitStatus.UNKNOWN;
       throw e;
-    } catch (Throwable e) {
-      LOG.error("Exception thrown on commit: ", e);
-      if (e instanceof AlreadyExistsException) {
+    } catch (CommitFailedException e) {
+      if (base == null || isMetadataLocationConflict(e)) {
         throw e;
       }
-      commitStatus =
-          BaseMetastoreOperations.CommitStatus.valueOf(
-              checkCommitStatus(newMetadataLocation, metadata).name());
-      if (commitStatus == BaseMetastoreOperations.CommitStatus.FAILURE) {
-        throw new CommitFailedException(e, "Failed to commit");
-      }
-      if (commitStatus == BaseMetastoreOperations.CommitStatus.UNKNOWN) {
-        throw new CommitStateUnknownException(e);
-      }
+
+      commitStatus = handlePreconditionFailure(metadata, newMetadataLocation, e);
+    } catch (Throwable failure) {
+      commitStatus = handleCommitThrowable(metadata, newMetadataLocation, failure);
     } finally {
-      try {
-        if (commitStatus == BaseMetastoreOperations.CommitStatus.FAILURE) {
-          LOG.warn("Failed to commit updates to table {}", tableName());
-          io().deleteFile(newMetadataLocation);
-        }
-      } catch (RuntimeException e) {
-        LOG.error(
-            "Failed to cleanup metadata file at {} for table {}",
-            newMetadataLocation,
+      cleanupAfterFailedCommit(commitStatus, newMetadataLocation);
+    }
+  }
+
+  private boolean isMetadataLocationConflict(CommitFailedException commitFailure) {
+    String message = commitFailure.getMessage();
+    return message != null
+        && message.contains("is not same as the current table metadata location");
+  }
+
+  /**
+   * A precondition failure means the etag sent with the update did not match the server's current
+   * etag. That usually means a concurrent commit won, but it can also mean an earlier attempt of
+   * this same update was applied before the client saw an error and retried with a stale etag.
+   * Confirm against the catalog before deleting the new metadata file: deleting it after it became
+   * the current metadata location would leave the table unreadable.
+   */
+  private BaseMetastoreOperations.CommitStatus handlePreconditionFailure(
+      TableMetadata metadata, String newMetadataLocation, CommitFailedException commitFailure) {
+    BaseMetastoreOperations.CommitStatus status =
+        checkCommitStatusStrict(
             tableName(),
-            e);
+            newMetadataLocation,
+            metadata.properties(),
+            () -> newMetadataLocationIsCommitted(newMetadataLocation));
+    switch (status) {
+      case SUCCESS:
+        LOG.warn(
+            "Update to table {} was applied by the server even though the commit failed with a"
+                + " precondition failure, treating the commit as successful",
+            tableName(),
+            commitFailure);
+        return status;
+      case UNKNOWN:
+        throw new CommitStateUnknownException(commitFailure);
+      case FAILURE:
+      default:
+        throw commitFailure;
+    }
+  }
+
+  private BaseMetastoreOperations.CommitStatus handleCommitThrowable(
+      TableMetadata metadata, String newMetadataLocation, Throwable failure) {
+    LOG.error("Exception thrown on commit: ", failure);
+    if (failure instanceof AlreadyExistsException) {
+      throw (AlreadyExistsException) failure;
+    }
+
+    BaseMetastoreOperations.CommitStatus status =
+        BaseMetastoreOperations.CommitStatus.valueOf(
+            checkCommitStatus(newMetadataLocation, metadata).name());
+    if (status == BaseMetastoreOperations.CommitStatus.FAILURE) {
+      throw new CommitFailedException(failure, "Failed to commit");
+    }
+    if (status == BaseMetastoreOperations.CommitStatus.UNKNOWN) {
+      throw new CommitStateUnknownException(failure);
+    }
+    return status;
+  }
+
+  private void cleanupAfterFailedCommit(
+      BaseMetastoreOperations.CommitStatus commitStatus, String newMetadataLocation) {
+    try {
+      if (commitStatus == BaseMetastoreOperations.CommitStatus.FAILURE) {
+        LOG.warn("Failed to commit updates to table {}", tableName());
+        io().deleteFile(newMetadataLocation);
       }
+    } catch (RuntimeException e) {
+      LOG.error(
+          "Failed to cleanup metadata file at {} for table {}",
+          newMetadataLocation,
+          tableName(),
+          e);
     }
   }
 
@@ -152,20 +221,23 @@ final class BigQueryTableOperations extends BaseMetastoreTableOperations {
   /** Update table properties with concurrent update detection using etag. */
   private void updateTable(
       String oldMetadataLocation, String newMetadataLocation, TableMetadata metadata) {
-    Table table = client.load(tableReference);
-    if (table.getEtag().isEmpty()) {
+    Table loadedTable = metastoreTable.getAndSet(null);
+    Preconditions.checkState(
+        loadedTable != null, "Table %s must be loaded during refresh before commit", tableName());
+
+    if (Strings.isNullOrEmpty(loadedTable.getEtag())) {
       throw new ValidationException(
           "Etag of legacy table %s is empty, manually update the table via the BigQuery API or"
               + " recreate and retry",
           tableName());
     }
-    ExternalCatalogTableOptions options = table.getExternalCatalogTableOptions();
-    addConnectionIfProvided(table, metadata.properties());
 
     // If `metadataLocationFromMetastore` is different from metadata location of base, it means
     // someone has updated metadata location in metastore, which is a conflict update.
+    Table currentTable = client.load(tableReference);
+    ExternalCatalogTableOptions currentOptions = currentTable.getExternalCatalogTableOptions();
     String metadataLocationFromMetastore =
-        options.getParameters().getOrDefault(METADATA_LOCATION_PROP, "");
+        currentOptions.getParameters().getOrDefault(METADATA_LOCATION_PROP, "");
     if (!metadataLocationFromMetastore.isEmpty()
         && !metadataLocationFromMetastore.equals(oldMetadataLocation)) {
       throw new CommitFailedException(
@@ -177,9 +249,22 @@ final class BigQueryTableOperations extends BaseMetastoreTableOperations {
           tableReference.getTableId());
     }
 
-    options.setParameters(buildTableParameters(newMetadataLocation, metadata));
+    // Patch a new table object instead of the loaded one: this operations instance can be used by
+    // concurrent commits, and mutating the shared object would let one commit overwrite another
+    // commit's metadata location before its patch request is sent.
+    ExternalCatalogTableOptions loadedOptions = loadedTable.getExternalCatalogTableOptions();
+    Table patchedTable =
+        new Table()
+            .setTableReference(loadedTable.getTableReference())
+            .setEtag(loadedTable.getEtag())
+            .setExternalCatalogTableOptions(
+                new ExternalCatalogTableOptions()
+                    .setStorageDescriptor(loadedOptions.getStorageDescriptor())
+                    .setConnectionId(loadedOptions.getConnectionId())
+                    .setParameters(buildTableParameters(newMetadataLocation, metadata)));
+    addConnectionIfProvided(patchedTable, metadata.properties());
     try {
-      client.update(tableReference, table);
+      client.update(tableReference, patchedTable);
     } catch (ValidationException e) {
       if (e.getMessage().toLowerCase(Locale.ENGLISH).contains("etag mismatch")) {
         throw new CommitFailedException(
@@ -188,6 +273,33 @@ final class BigQueryTableOperations extends BaseMetastoreTableOperations {
 
       throw e;
     }
+  }
+
+  /**
+   * Checks whether the given metadata location is the table's current metadata location or one of
+   * its previous metadata locations. Unlike the refresh-based check in the parent class, this reads
+   * the catalog state directly and stays usable when the table was dropped and recreated with a
+   * different UUID.
+   */
+  private boolean newMetadataLocationIsCommitted(String newMetadataLocation) {
+    Table serverTable = client.load(tableReference);
+    ExternalCatalogTableOptions options = serverTable.getExternalCatalogTableOptions();
+    if (options == null || options.getParameters() == null) {
+      return false;
+    }
+
+    String currentMetadataLocation = options.getParameters().get(METADATA_LOCATION_PROP);
+    if (newMetadataLocation.equals(currentMetadataLocation)) {
+      return true;
+    }
+
+    if (currentMetadataLocation == null) {
+      return false;
+    }
+
+    TableMetadata currentMetadata = TableMetadataParser.read(io(), currentMetadataLocation);
+    return currentMetadata.previousFiles().stream()
+        .anyMatch(log -> log.file().equals(newMetadataLocation));
   }
 
   // To make the table queryable from Hive, the user would likely be setting the HIVE_ENGINE_ENABLED

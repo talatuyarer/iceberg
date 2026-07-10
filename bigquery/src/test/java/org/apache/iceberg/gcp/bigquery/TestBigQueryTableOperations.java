@@ -41,7 +41,9 @@ import com.google.api.services.bigquery.model.TableReference;
 import java.io.File;
 import java.io.IOException;
 import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.filefilter.TrueFileFilter;
 import org.apache.hadoop.conf.Configuration;
@@ -50,9 +52,11 @@ import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -172,7 +176,7 @@ public class TestBigQueryTableOperations {
   public void failWhenEtagMismatch() throws Exception {
     Table tableWithEtag = createTestTable().setEtag("etag");
     reset(client);
-    when(client.load(TABLE_REFERENCE)).thenReturn(tableWithEtag);
+    when(client.load(TABLE_REFERENCE)).thenReturn(tableWithEtag, tableWithEtag);
 
     org.apache.iceberg.Table loadedTable = catalog.loadTable(IDENTIFIER);
 
@@ -183,6 +187,9 @@ public class TestBigQueryTableOperations {
         .isInstanceOf(CommitFailedException.class)
         .hasMessageContaining(
             "Updating table failed due to conflict updates (etag mismatch). Retry the update");
+
+    // The confirmed-failed commit must clean up the metadata file it wrote.
+    assertThat(metadataJsonFiles()).hasSize(1);
   }
 
   @Test
@@ -196,7 +203,7 @@ public class TestBigQueryTableOperations {
                     .setParameters(ImmutableMap.of(METADATA_LOCATION_PROP, "a/new/location")));
 
     reset(client);
-    // Two invocations, for loadTable and commit.
+    // Two invocations, for loadTable and the commit-time metadata location check.
     when(client.load(TABLE_REFERENCE)).thenReturn(tableWithEtag, tableWithNewMetadata);
 
     org.apache.iceberg.Table loadedTable = catalog.loadTable(IDENTIFIER);
@@ -206,6 +213,112 @@ public class TestBigQueryTableOperations {
             () -> loadedTable.updateSchema().addColumn("n", Types.IntegerType.get()).commit())
         .isInstanceOf(CommitFailedException.class)
         .hasMessageContaining("is not same as the current table metadata location");
+  }
+
+  @Test
+  public void failWhenConcurrentModificationDetected() throws Exception {
+    Table tableWithEtag = createTestTable().setEtag("etag");
+    reset(client);
+    when(client.load(TABLE_REFERENCE)).thenReturn(tableWithEtag, tableWithEtag, tableWithEtag);
+
+    org.apache.iceberg.Table loadedTable = catalog.loadTable(IDENTIFIER);
+
+    // Simulate concurrent modification detected via ETag mismatch
+    when(client.update(any(), any()))
+        .thenThrow(new CommitFailedException("Cannot commit: Etag mismatch"));
+
+    assertThatThrownBy(
+            () -> loadedTable.updateSchema().addColumn("n", Types.IntegerType.get()).commit())
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessageContaining("Cannot commit");
+
+    // Verify table is loaded once for the refresh before the commit, once for the commit-time
+    // metadata location check, and once by the commit status check that confirms the precondition
+    // failure was a real failure.
+    verify(client, times(3)).load(TABLE_REFERENCE);
+  }
+
+  @Test
+  public void succeedWhenPreconditionFailureAfterServerSideSuccess() throws Exception {
+    Table tableWithEtag = createTestTable().setEtag("etag");
+    reset(client);
+
+    // Simulate an update that is applied by the server before the client sees a precondition
+    // failure, e.g. when a retried request carries an etag invalidated by its own first attempt.
+    AtomicReference<Table> serverTable = new AtomicReference<>(tableWithEtag);
+    when(client.load(TABLE_REFERENCE)).thenAnswer(invocation -> serverTable.get());
+    when(client.update(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              Table patchedTable = invocation.getArgument(1, Table.class);
+              serverTable.set(patchedTable.clone().setEtag("new-etag"));
+              throw new CommitFailedException("Precondition Failed: etag mismatch");
+            });
+
+    org.apache.iceberg.Table loadedTable = catalog.loadTable(IDENTIFIER);
+    assertThatNoException()
+        .isThrownBy(
+            () -> loadedTable.updateSchema().addColumn("n", Types.IntegerType.get()).commit());
+
+    // The committed metadata file must not be deleted; it is the current metadata location.
+    String committedMetadataLocation =
+        serverTable
+            .get()
+            .getExternalCatalogTableOptions()
+            .getParameters()
+            .get(METADATA_LOCATION_PROP);
+    assertThat(new File(committedMetadataLocation)).exists();
+
+    org.apache.iceberg.Table reloadedTable = catalog.loadTable(IDENTIFIER);
+    assertThat(reloadedTable.schema().findField("n")).isNotNull();
+  }
+
+  @Test
+  public void keepMetadataWhenCommitStateIsUnknown() throws Exception {
+    Table tableWithEtag = createTestTable().setEtag("etag");
+    reset(client);
+    when(client.load(TABLE_REFERENCE)).thenReturn(tableWithEtag, tableWithEtag);
+
+    org.apache.iceberg.Table loadedTable = catalog.loadTable(IDENTIFIER);
+
+    when(client.update(any(), any()))
+        .thenThrow(new CommitStateUnknownException(new RuntimeException("network error")));
+    assertThatThrownBy(
+            () -> loadedTable.updateSchema().addColumn("n", Types.IntegerType.get()).commit())
+        .isInstanceOf(CommitStateUnknownException.class)
+        .hasMessageContaining("network error");
+
+    // The new metadata file may have been committed on the server, so it must not be deleted.
+    assertThat(metadataJsonFiles()).hasSize(2);
+  }
+
+  @Test
+  public void updateDoesNotMutateTableLoadedByRefresh() throws Exception {
+    Table tableWithEtag = createTestTable().setEtag("etag");
+    reset(client);
+    when(client.load(TABLE_REFERENCE)).thenReturn(tableWithEtag, tableWithEtag);
+    String originalMetadataLocation =
+        tableWithEtag.getExternalCatalogTableOptions().getParameters().get(METADATA_LOCATION_PROP);
+
+    org.apache.iceberg.Table loadedTable = catalog.loadTable(IDENTIFIER);
+
+    when(client.update(any(), any())).thenReturn(tableWithEtag);
+    loadedTable.updateSchema().addColumn("n", Types.IntegerType.get()).commit();
+
+    ArgumentCaptor<Table> tableArgumentCaptor = ArgumentCaptor.forClass(Table.class);
+    verify(client, times(1)).update(any(), tableArgumentCaptor.capture());
+
+    // The patch sent to the server carries the new metadata location, but the shared object
+    // loaded during refresh must not be mutated by the commit.
+    assertThat(
+            tableArgumentCaptor
+                .getValue()
+                .getExternalCatalogTableOptions()
+                .getParameters()
+                .get(METADATA_LOCATION_PROP))
+        .isNotEqualTo(originalMetadataLocation);
+    assertThat(tableWithEtag.getExternalCatalogTableOptions().getParameters())
+        .containsEntry(METADATA_LOCATION_PROP, originalMetadataLocation);
   }
 
   @Test
@@ -278,6 +391,19 @@ public class TestBigQueryTableOperations {
                 .setStorageDescriptor(new StorageDescriptor().setLocationUri(tableDir))
                 .setParameters(
                     Collections.singletonMap(METADATA_LOCATION_PROP, metadataLocation.get())));
+  }
+
+  private List<File> metadataJsonFiles() throws IOException {
+    List<File> jsonFiles = Lists.newArrayList();
+    String tableDir = tempFolder.toPath().resolve(TABLE).toString();
+    for (File file :
+        FileUtils.listFiles(new File(tableDir), TrueFileFilter.INSTANCE, TrueFileFilter.INSTANCE)) {
+      if (file.getCanonicalPath().endsWith(".json")) {
+        jsonFiles.add(file);
+      }
+    }
+
+    return jsonFiles;
   }
 
   private static Optional<String> metadataFilePath(String tableDir) throws IOException {
